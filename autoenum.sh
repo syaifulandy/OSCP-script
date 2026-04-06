@@ -8,6 +8,7 @@
 # 2. Global Searchsploit Summary (No Duplicates)
 # 3. Sequential Scan (Quick IPs -> Deep IPs)
 # 4. Clean Directory Management
+# 5. Script external yg digunakan: ffufscan.sh dan wpscan.sh
 # ==========================================================
 
 TARGETS="$1"
