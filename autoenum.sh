@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # ==========================================================
-# OSCP AUTOMATION SCANNER (ULTIMATE REVISED)
+# OSCP AUTOMATION SCANNER (ULTIMATE REVISED V2)
 # ==========================================================
 # Fitur Utama:
-# 1. Global Searchsploit Summary (No Duplicates)
-# 2. Sequential Scan (Quick IPs -> Deep IPs)
-# 3. Clean Directory Management
-# 4. Filter Remote Only & No .txt (Specific to OSCP)
+# 1. Dual Output Searchsploit (Remote vs Local PrivEsc)
+# 2. Global Searchsploit Summary (No Duplicates)
+# 3. Sequential Scan (Quick IPs -> Deep IPs)
+# 4. Clean Directory Management
 # ==========================================================
 
 TARGETS="$1"
@@ -35,59 +35,68 @@ parse_nmap_open() {
   }'
 }
 
-# =========================
-# GENERATE EXPLOIT SUMMARY
-# =========================
-# Fungsi ini memproses file parsed_*.txt untuk mencari exploit secara unik
+# ==========================================
+# GENERATE EXPLOIT SUMMARY (REMOTE vs LOCAL)
+# ==========================================
 generate_exploit_summary() {
   local ip_dir="$1"
   local parsed_file="$2"
-  local outfile="$ip_dir/exploit_summary.txt"
+  local remote_out="$ip_dir/exploits_remote.txt"
+  local local_out="$ip_dir/exploits_privesc.txt"
   
-  local temp_specific=$(mktemp)
-  local temp_broad=$(mktemp)
+  local tmp_rem_spec=$(mktemp)
+  local tmp_rem_broad=$(mktemp)
+  local tmp_loc=$(mktemp)
 
   [[ ! -s "$parsed_file" ]] && return
 
-  echo -e "\e[1;33m[*] Generating unique exploit summary for $parsed_file...\e[0m"
+  echo -e "\e[1;33m[*] Sorting Remote vs Local exploits for $parsed_file...\e[0m"
 
   while IFS=';' read -r port proto product; do
     # Skip banner sampah
     [[ -z "$product" || "$product" == "unknown" || "$product" == "tcpwrapped" ]] && continue
     [[ "$product" == "microsoft-ds?" ]] && product="Microsoft Windows SMB"
 
-    # 1. Specific Search (Full Banner)
-    searchsploit -t "$product" 2>/dev/null | grep -i "Remote" | grep -v ".txt" >> "$temp_specific"
-
-    # 2. Broad Search (Software Name Only)
+    # --- 1. SEARCH REMOTE EXPLOITS ---
+    # Filter: Fokus pada Remote Code Execution, Overflow, dan Service Exploit
+    searchsploit -t "$product" 2>/dev/null | grep -iE "Remote|RCE|Execution|Overflow" | grep -v ".txt" >> "$tmp_rem_spec"
+    
     local software_only=$(echo "$product" | awk '{print $1}')
-    # Filter: Jangan broad search kata "Microsoft" karena terlalu banyak noise
     if [[ -n "$software_only" && "$software_only" != "Microsoft" && "$software_only" != "$product" ]]; then
-      searchsploit -t "$software_only" 2>/dev/null | grep -i "Remote" | grep -v ".txt" >> "$temp_broad"
+      searchsploit -t "$software_only" 2>/dev/null | grep -iE "Remote|RCE|Execution|Overflow" | grep -v ".txt" >> "$tmp_rem_broad"
     fi
+
+    # --- 2. SEARCH LOCAL EXPLOITS (PrivEsc) ---
+    # Filter: Fokus pada Local Privilege Escalation (LPE)
+    searchsploit -t "$product" 2>/dev/null | grep -iE "Local|Privilege|Escalation|LPE" | grep -v ".txt" >> "$tmp_loc"
+    if [[ -n "$software_only" && "$software_only" != "Microsoft" ]]; then
+        searchsploit -t "$software_only" 2>/dev/null | grep -iE "Local|Privilege|Escalation|LPE" | grep -v ".txt" >> "$tmp_loc"
+    fi
+
   done < "$parsed_file"
 
-  # Write output dengan deduplikasi
-  echo "======================================================" > "$outfile"
-  echo "   SUMMARY SPECIFIC EXPLOITS (Version Based)" >> "$outfile"
-  echo "======================================================" >> "$outfile"
-  if [ -s "$temp_specific" ]; then
-    sort -u "$temp_specific" >> "$outfile"
+  # Tulis Output Remote
+  echo "======================================================" > "$remote_out"
+  echo "   SPECIFIC REMOTE EXPLOITS (High Confidence)" >> "$remote_out"
+  echo "======================================================" >> "$remote_out"
+  sort -u "$tmp_rem_spec" >> "$remote_out"
+  
+  echo -e "\n\n======================================================" >> "$remote_out"
+  echo "   BROAD REMOTE SEARCH (App Based)" >> "$remote_out"
+  echo "======================================================" >> "$remote_out"
+  comm -23 <(sort -u "$tmp_rem_broad") <(sort -u "$tmp_rem_spec") >> "$remote_out"
+
+  # Tulis Output Local PrivEsc
+  echo "======================================================" > "$local_out"
+  echo "   LOCAL PRIVILEGE ESCALATION CANDIDATES" >> "$local_out"
+  echo "======================================================" >> "$local_out"
+  if [ -s "$tmp_loc" ]; then
+    sort -u "$tmp_loc" >> "$local_out"
   else
-    echo "No specific exploits found." >> "$outfile"
+    echo "No obvious Local PrivEsc found in service banners." >> "$local_out"
   fi
 
-  echo -e "\n\n======================================================" >> "$outfile"
-  echo "   BROAD SEARCH RESULTS (App Based)" >> "$outfile"
-  echo "======================================================" >> "$outfile"
-  if [ -s "$temp_broad" ]; then
-    # comm -23 menampilkan yang ada di BROAD tapi belum ada di SPECIFIC
-    comm -23 <(sort -u "$temp_broad") <(sort -u "$temp_specific") >> "$outfile"
-  else
-    echo "No broad exploits found." >> "$outfile"
-  fi
-
-  rm "$temp_specific" "$temp_broad"
+  rm "$tmp_rem_spec" "$tmp_rem_broad" "$tmp_loc"
 }
 
 # =========================
@@ -139,15 +148,12 @@ for ip in $(cat "$TARGETS"); do
   IP_DIR="$BASE_DIR/scans/$ip"
   mkdir -p "$IP_DIR"
 
-  # Nmap Quick
   echo "[*] Nmap Quick Scan..."
   nmap -sC -sV -Pn "$ip" -oN "$IP_DIR/quick.txt" > /dev/null
   parse_nmap_open "$IP_DIR/quick.txt" > "$IP_DIR/parsed_quick.txt"
 
-  # Generate Exploit Summary untuk hasil Quick
   generate_exploit_summary "$IP_DIR" "$IP_DIR/parsed_quick.txt"
   
-  # Service Enum
   while IFS=';' read -r port proto product; do
     enum_service "$ip" "$port" "$proto"
   done < "$IP_DIR/parsed_quick.txt"
@@ -161,23 +167,19 @@ for ip in $(cat "$TARGETS"); do
   echo -e "\n\e[1;34m>>> DEEP SCANNING: $ip <<<\e[0m"
   IP_DIR="$BASE_DIR/scans/$ip"
   
-  # Nuclei
   target_nuclei=$(grep "http" "$IP_DIR/parsed_quick.txt" | head -n 1 | awk -F';' '{print "http://'$ip':"$1}')
   [[ -z "$target_nuclei" ]] && target_nuclei="$ip"
   echo "[*] Running Nuclei..."
   nuclei -s critical,high,medium -u "$target_nuclei" -o "$IP_DIR/nuclei.txt" -nh -ni > /dev/null 2>&1
 
-  # Full Nmap
   echo "[*] Running Nmap Full Port (-p-)..."
   nmap -p- -sV -Pn "$ip" -oN "$IP_DIR/full.txt" > /dev/null
   parse_nmap_open "$IP_DIR/full.txt" > "$IP_DIR/parsed_full.txt"
 
-  # Delta Check (Port Baru)
   cat "$IP_DIR/parsed_full.txt" "$IP_DIR/parsed_quick.txt" | sort | uniq -u > "$IP_DIR/parsed_new.txt"
 
   if [[ -s "$IP_DIR/parsed_new.txt" ]]; then
-    echo -e "\e[1;31m[!] New Ports Found! Updating Exploit Summary...\e[0m"
-    # Update summary untuk menyertakan port baru
+    echo -e "\e[1;31m[!] New Ports Found! Updating Exploit Summaries...\e[0m"
     generate_exploit_summary "$IP_DIR" "$IP_DIR/parsed_full.txt"
     while IFS=';' read -r port proto product; do
       enum_service "$ip" "$port" "$proto"
@@ -185,4 +187,4 @@ for ip in $(cat "$TARGETS"); do
   fi
 done
 
-echo -e "\n\e[1;32m[+] DONE! Check scans/[IP]/exploit_summary.txt for clean results.\e[0m"
+echo -e "\n\e[1;32m[+] DONE! Check scans/[IP]/exploits_remote.txt and exploits_privesc.txt\e[0m"
