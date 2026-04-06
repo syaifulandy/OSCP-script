@@ -64,11 +64,10 @@ parse_nmap_open() {
 search_exploit() {
   local service="$1"
   local version="$2"
-  local outdir="$3"
 
   [[ -z "$version" ]] && return
 
-  searchsploit "$service $version" > "$outdir/searchsploit.txt" 2>/dev/null
+  searchsploit "$service $version" > "$OUT/searchsploit.txt" 2>/dev/null
 }
 
 # =========================
