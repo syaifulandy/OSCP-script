@@ -2,6 +2,8 @@
 
 **Deskripsi:** HTTP server + auto generate wget & PowerShell (IWR) berdasarkan IP & file di folder
 
+> sudo nano /usr/local/bin/webserver
+
 ### Script
 ```bash
 #!/bin/bash
