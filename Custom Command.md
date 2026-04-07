@@ -2,6 +2,8 @@
 
 **Deskripsi:** HTTP server + auto generate wget/curl berdasarkan IP interface
 
+└─# sudo nano /usr/local/bin/webserver    
+
 ### Script
 ```bash
 #!/bin/bash
