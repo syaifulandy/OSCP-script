@@ -1,8 +1,6 @@
-## 🚀 webserver (enhanced)
+## 🚀 webserver (auto payload)
 
-**Deskripsi:** HTTP server + auto generate wget/curl berdasarkan IP interface
-
-└─# sudo nano /usr/local/bin/webserver    
+**Deskripsi:** HTTP server + auto generate wget & PowerShell (IWR) berdasarkan IP & file di folder
 
 ### Script
 ```bash
@@ -13,46 +11,38 @@ PORT=${1:-8000}
 echo "[+] Starting web server on port $PORT..."
 echo
 
-# Ambil semua interface selain loopback
-IPS=$(ip -4 -o addr show | awk '!/ lo / {print $2,$4}')
+# Ambil semua file di directory (exclude folder)
+FILES=$(ls -p | grep -v /)
 
-echo "[+] Available download URLs:"
+echo "[+] Available download commands:"
 echo
 
-for i in $IPS; do
-    IFACE=$(echo $i | cut -d/ -f1)
-    IP=$(echo $i | cut -d/ -f1)
-done
-
-# Cara lebih clean
+# Loop semua interface selain loopback
 ip -4 -o addr show | awk '!/ lo / {
     split($4,a,"/");
-    printf "%s:\n", $2;
-    printf "  wget http://%s:'"$PORT"'/filename\n", a[1];
-    printf "  curl http://%s:'"$PORT"'/filename\n\n", a[1];
-}'
+    print $2 " (" a[1] "):"
+}' | while read line; do
+
+    IFACE=$(echo $line | awk '{print $1}')
+    IP=$(echo $line | awk -F'[()]' '{print $2}')
+
+    echo "$IFACE:"
+    
+    for f in $FILES; do
+        echo "  wget http://$IP:$PORT/$f"
+        echo "  iwr -uri http://$IP:$PORT/$f -Outfile $f"
+    done
+
+    echo
+done
 
 echo "[+] Serving files from: $(pwd)"
 echo "----------------------------------------"
 
-python3 -m http.server "$PORT"
+python3 -m http.server "$PORT" --bind 0.0.0.0
 ```
 
 ### Usage
 ```bash
 webserver 80
-```
-
----
-
-## 📌 Output Contoh
-
-```
-eth0:
-  wget http://192.168.116.128:80/file
-  curl http://192.168.116.128:80/file
-
-tun0:
-  wget http://192.168.45.195:80/file
-  curl http://192.168.45.195:80/file
 ```
