@@ -150,7 +150,7 @@ for ip in $(cat "$TARGETS"); do
   mkdir -p "$IP_DIR"
 
   echo "[*] Nmap Quick Scan..."
-  nmap -sC -sV --host-timeout 30 -Pn "$ip" -oN "$IP_DIR/quick.txt" > /dev/null
+  nmap -sC -sV --host-timeout 60 -Pn "$ip" -oN "$IP_DIR/quick.txt" > /dev/null
   parse_nmap_open "$IP_DIR/quick.txt" > "$IP_DIR/parsed_quick.txt"
 
   generate_exploit_summary "$IP_DIR" "$IP_DIR/parsed_quick.txt"
@@ -174,7 +174,7 @@ for ip in $(cat "$TARGETS"); do
   nuclei -s critical,high,medium -u "$target_nuclei" -o "$IP_DIR/nuclei.txt" -nh -ni > /dev/null 2>&1
 
   echo "[*] Running Nmap Full Port (-p-)..."
-  nmap -p- -sV --host-timeout 30 -Pn "$ip" -oN "$IP_DIR/full.txt" > /dev/null
+  nmap -p- -sV --host-timeout 60 -Pn "$ip" -oN "$IP_DIR/full.txt" > /dev/null
   parse_nmap_open "$IP_DIR/full.txt" > "$IP_DIR/parsed_full.txt"
 
   cat "$IP_DIR/parsed_full.txt" "$IP_DIR/parsed_quick.txt" | sort | uniq -u > "$IP_DIR/parsed_new.txt"
