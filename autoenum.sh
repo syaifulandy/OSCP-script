@@ -150,7 +150,7 @@ for ip in $(cat "$TARGETS"); do
   mkdir -p "$IP_DIR"
 
   echo "[*] Nmap Quick Scan..."
-  nmap -sC -sV --host-timeout 60 -Pn "$ip" -oN "$IP_DIR/quick.txt" > /dev/null
+  nmap -sC -sV --host-timeout 100 --version-intensity 0 -Pn "$ip" -oN "$IP_DIR/quick.txt" > /dev/null
   parse_nmap_open "$IP_DIR/quick.txt" > "$IP_DIR/parsed_quick.txt"
 
   generate_exploit_summary "$IP_DIR" "$IP_DIR/parsed_quick.txt"
