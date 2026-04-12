@@ -48,3 +48,47 @@ python3 -m http.server "$PORT" --bind 0.0.0.0
 ```bash
 webserver 80
 ```
+
+
+## 🚀 rdp
+
+**Deskripsi:** Shortcut cepat untuk koneksi RDP (xfreerdp)
+
+### Script
+```bash
+#!/bin/bash
+
+IP=$1
+USER=${2:-Administrator}
+PASS=$3
+
+if [ -z "$IP" ]; then
+    echo "Usage: rdp <ip> [user] [pass]"
+    exit 1
+fi
+
+# Prompt password jika kosong
+if [ -z "$PASS" ]; then
+    read -s -p "Password: " PASS
+    echo
+fi
+
+xfreerdp /v:$IP /u:$USER /p:"$PASS" /dynamic-resolution /cert:ignore +clipboard /timeout:5000 || echo "[!] Connection failed"
+```
+
+### Setup
+```bash
+sudo nano /usr/local/bin/rdp
+sudo chmod +x /usr/local/bin/rdp
+```
+
+### Usage
+```bash
+rdp 192.168.50.250
+rdp 192.168.50.250 offsec lab
+```
+
+### Info
+- Default user: **Administrator**
+- Password hidden saat input
+- Clipboard aktif (copy-paste)
