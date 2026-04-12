@@ -1,8 +1,18 @@
-## 🚀 webserver (auto payload)
+# ⚙️ Custom Commands (Kali Linux)
 
-**Deskripsi:** HTTP server + auto generate wget & PowerShell (IWR) berdasarkan IP & file di folder
+Kumpulan shortcut untuk mempercepat workflow pentest / OSCP.
 
-> sudo nano /usr/local/bin/webserver
+---
+
+## 🌐 webserver
+
+**Deskripsi:** HTTP server + auto generate wget & PowerShell (IWR)
+
+### Setup
+```bash
+sudo nano /usr/local/bin/webserver
+sudo chmod +x /usr/local/bin/webserver
+```
 
 ### Script
 ```bash
@@ -13,13 +23,11 @@ PORT=${1:-8000}
 echo "[+] Starting web server on port $PORT..."
 echo
 
-# Ambil semua file di directory (exclude folder)
 FILES=$(ls -p | grep -v /)
 
 echo "[+] Available download commands:"
 echo
 
-# Loop semua interface selain loopback
 ip -4 -o addr show | awk '!/ lo / {
     split($4,a,"/");
     print $2 " (" a[1] "):"
@@ -49,10 +57,17 @@ python3 -m http.server "$PORT" --bind 0.0.0.0
 webserver 80
 ```
 
+---
 
-## 🚀 rdp
+## 🖥️ rdp
 
 **Deskripsi:** Shortcut cepat untuk koneksi RDP (xfreerdp)
+
+### Setup
+```bash
+sudo nano /usr/local/bin/rdp
+sudo chmod +x /usr/local/bin/rdp
+```
 
 ### Script
 ```bash
@@ -67,19 +82,12 @@ if [ -z "$IP" ]; then
     exit 1
 fi
 
-# Prompt password jika kosong
 if [ -z "$PASS" ]; then
     read -s -p "Password: " PASS
     echo
 fi
 
 xfreerdp /v:$IP /u:$USER /p:"$PASS" /dynamic-resolution /cert:ignore +clipboard /timeout:5000 || echo "[!] Connection failed"
-```
-
-### Setup
-```bash
-sudo nano /usr/local/bin/rdp
-sudo chmod +x /usr/local/bin/rdp
 ```
 
 ### Usage
@@ -89,6 +97,9 @@ rdp 192.168.50.250 offsec lab
 ```
 
 ### Info
-- Default user: **Administrator**
+- Default user: `Administrator`
 - Password hidden saat input
-- Clipboard aktif (copy-paste)
+- Clipboard aktif
+- Cert: ignore (lab friendly)
+
+---
