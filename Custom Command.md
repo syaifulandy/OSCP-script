@@ -4,7 +4,7 @@ Kumpulan shortcut untuk mempercepat workflow pentest / OSCP.
 
 ---
 
-## 1 webserver
+## 1. webserver
 
 **Deskripsi:** HTTP server + auto generate wget & PowerShell (IWR)
 
@@ -59,7 +59,7 @@ webserver 80
 
 ---
 
-## 2 rdp
+## 2. rdp
 
 **Deskripsi:** Shortcut cepat untuk koneksi RDP (xfreerdp)
 
@@ -104,7 +104,7 @@ rdp 192.168.50.250 offsec lab
 
 ---
 
-## 3 spray
+## 3. spray
 
 **Deskripsi:** Shortcut cepat untuk spray user password ke list target (net exec / nxc)
 
