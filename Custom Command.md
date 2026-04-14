@@ -133,7 +133,6 @@ SMB_OUT="$OUTDIR/smb_spray.txt"
 
 # OSCP-safe config
 THREADS=1
-JITTER=3
 
 PROTOCOLS=("smb" "rdp" "wmi" "winrm" "mssql" "ssh" "ftp" "vnc" "nfs" "ldap")
 
@@ -157,7 +156,6 @@ if [[ "$1" == "-h" || "$1" == "--help" ]]; then
     echo
     echo "Safe mode:"
     echo "  Threads : $THREADS"
-    echo "  Jitter  : $JITTER sec"
     exit 0
 fi
 
