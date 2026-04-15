@@ -279,3 +279,66 @@ spray listip user.txt pass.txt
 
 ---
 
+## 3. webdav
+
+**Deskripsi:** Shortcut cepat untuk running webdav (wsgidav)
+
+### Setup
+```bash
+sudo nano /usr/local/bin/webdav
+sudo chmod +x /usr/local/bin/webdav
+```
+
+### Script
+```bash
+#!/bin/bash
+
+# Default values
+DIR="/tmp/wsgidav"
+PORT="80"
+
+# Help menu
+if [[ "$1" == "-h" || "$1" == "--help" ]]; then
+    echo "Usage: webdav [directory] [port]"
+    echo ""
+    echo "Examples:"
+    echo "  webdav                     # default /tmp/wsgidav port 80"
+    echo "  webdav /tmp/share          # custom directory"
+    echo "  webdav /tmp/share 8080     # custom directory + port"
+    exit 0
+fi
+
+# Arguments
+[[ -n "$1" ]] && DIR="$1"
+[[ -n "$2" ]] && PORT="$2"
+
+# Create directory if not exists
+if [[ ! -d "$DIR" ]]; then
+    echo "[+] Creating directory: $DIR"
+    mkdir -p "$DIR"
+fi
+
+# Get IP
+IP=$(hostname -I | awk '{print $1}')
+
+# Banner
+echo "[+] WebDAV Server Starting"
+echo "[+] Root : $DIR"
+echo "[+] Port : $PORT"
+echo "[+] URL  : http://$IP:$PORT/"
+echo ""
+
+# Run WebDAV
+wsgidav --host=0.0.0.0 --port="$PORT" --root="$DIR" --auth=anonymous
+
+
+```
+
+### Usage
+```bash
+webdav (Default /tmp/webdav port 80)
+webdav /home/kali/share 8080 (Custom folder + port)
+```
+
+---
+
