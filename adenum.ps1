@@ -1,5 +1,6 @@
 # ===============================
 # AD ENUM REPORT (OSCP STYLE - FINAL)
+# powershell -NoProfile -ExecutionPolicy Bypass -File ./adenum.ps1
 # ===============================
 
 $outfile = "$env:USERPROFILE\ad_enum_report.txt"
