@@ -40,7 +40,7 @@ $hosts = Get-DomainComputer
 if ($hosts.Count -eq 0) {
     Add-Content $outfile "Null"
 } else {
-    xs | ForEach-Object {
+    $hosts | ForEach-Object {
         $ip = ""
         try {
             $ip = ([System.Net.Dns]::GetHostAddresses($_.dnshostname) |
