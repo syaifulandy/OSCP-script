@@ -147,11 +147,13 @@ foreach ($target in $targets) {
 
             foreach ($line in $content) {
 
-                if ($line -match "^\s+<.*>\s+(.*\\.*)$") {
-                    $user = $matches[1].Trim()
-
-                    if ($user) {
-                        $results += "$target;$user"
+                if ($line -match "\\") {
+                    $parts = $line -split "\s+"
+                    $user = $parts[-1].Trim()
+                
+                    if ($user -and $user -notmatch "^NT SERVICE") {
+                        $short = $target.Split('.')[0]
+                        $results += "$short;$user"
                     }
                 }
             }
