@@ -342,3 +342,40 @@ webdav /home/kali/share 8080 (Custom folder + port)
 
 ---
 
+
+## 4. Reverse shell
+
+**Deskripsi:** Shortcut cepat untuk running nc -lnvp + session log + rlwrap (wsgidav)
+
+### Setup
+```bash
+sudo nano /usr/local/bin/webdav
+sudo chmod +x /usr/local/bin/webdav
+```
+
+### Script
+```bash
+#!/bin/bash
+
+PORT=${1:-4444}
+LOG="session_${PORT}_$(date +%F_%H-%M-%S).log"
+
+echo "[+] Reverse shell listener"
+echo "[+] Port : $PORT"
+echo "[+] Log  : $LOG"
+echo ""
+
+script -f "$LOG" -c "rlwrap nc -lnvp $PORT"
+```
+
+### Usage
+```bash
+rev (default port 4444)
+rev 1234
+rev 8000
+rev 9001
+```
+
+---
+
+
