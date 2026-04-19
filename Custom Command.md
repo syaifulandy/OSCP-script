@@ -345,7 +345,7 @@ webdav /home/kali/share 8080 (Custom folder + port)
 
 ## 5. Reverse shell
 
-**Deskripsi:** Shortcut cepat untuk running nc -lnvp + session log + rlwrap (wsgidav)
+**Deskripsi:** Shortcut cepat untuk running nc -lnvp + session log + rlwrap
 
 ### Setup
 ```bash
