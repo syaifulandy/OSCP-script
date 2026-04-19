@@ -40,7 +40,7 @@ $hosts = Get-DomainComputer
 if ($hosts.Count -eq 0) {
     Add-Content $outfile "Null"
 } else {
-    $hosts | ForEach-Object {
+    xs | ForEach-Object {
         $ip = ""
         try {
             $ip = ([System.Net.Dns]::GetHostAddresses($_.dnshostname) |
@@ -121,67 +121,52 @@ write-section "Shortest Path to Domain Admins"
 Add-Content $outfile "Null"
 
 # ===============================
-# 7. ACTIVE SESSIONS
+# 7. ACTIVE SESSIONS (PsLoggedon)
 # ===============================
-    write-section "ACTIVE SESSIONS"
-    
-    $results = @()
-    
-    try {
-        $targets = Get-DomainComputer | Select -ExpandProperty dnshostname
-    } catch {
-        $targets = @()
-    }
-    
-    foreach ($target in $targets) {
-    
-        # -------------------------------
-        # METHOD 1: NetSession (SMB sessions)
-        # -------------------------------
-        try {
-            $sessions = Get-NetSession -ComputerName $target -ErrorAction SilentlyContinue
-    
-            foreach ($s in $sessions) {
-                $user = $s.UserName
-    
-                if ($user -match "^S-1-5-21-.*-500$") {
-                    $user = "LOCAL_ADMINISTRATOR"
-                }
-    
-                if ($user) {
-                    $results += "$target;$user"
-                }
-            }
-        } catch {}
-    
-        # -------------------------------
-        # METHOD 2: NetLoggedon (logged-on users)
-        # -------------------------------
-        try {
-            $logged = Get-NetLoggedon -ComputerName $target -ErrorAction SilentlyContinue
-    
-            foreach ($l in $logged) {
-                $user = $l.UserName
-    
-                if ($user -match "^S-1-5-21-.*-500$") {
-                    $user = "LOCAL_ADMINISTRATOR"
-                }
-    
-                if ($user) {
-                    $results += "$target;$user"
-                }
-            }
-        } catch {}
-    }
+write-section "ACTIVE SESSIONS"
 
-    # -------------------------------
-    # OUTPUT
-    # -------------------------------
-    if ($results.Count -eq 0) {
-        Add-Content $outfile "Null"
-    } else {
-        $results | Sort-Object -Unique | Add-Content $outfile
-    }
+$results = @()
+
+try {
+    $targets = Get-DomainComputer | Select -ExpandProperty dnshostname
+} catch {
+    $targets = @()
+}
+
+foreach ($target in $targets) {
+
+    $tmp = "$env:TEMP\pslog_$target.txt"
+
+    try {
+        # Run via CMD + redirect output (anti hang)
+        cmd /c "PsLoggedon64.exe \\$target -accepteula > $tmp 2>&1"
+
+        if (Test-Path $tmp) {
+
+            $content = Get-Content $tmp
+
+            foreach ($line in $content) {
+
+                if ($line -match "^\s+<.*>\s+(.*\\.*)$") {
+                    $user = $matches[1].Trim()
+
+                    if ($user) {
+                        $results += "$target;$user"
+                    }
+                }
+            }
+
+            Remove-Item $tmp -ErrorAction SilentlyContinue
+        }
+
+    } catch {}
+}
+
+if ($results.Count -eq 0) {
+    Add-Content $outfile "Null"
+} else {
+    $results | Sort-Object -Unique | Add-Content $outfile
+}
 
 # ===============================
 # 8. KERBEROASTABLE USERS
