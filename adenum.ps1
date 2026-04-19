@@ -146,15 +146,13 @@ foreach ($target in $targets) {
             $content = Get-Content $tmp
 
             foreach ($line in $content) {
-
-                if ($line -match "\\") {
-                    $parts = $line -split "\s+"
-                    $user = $parts[-1].Trim()
-                
-                    if ($user -and $user -notmatch "^NT SERVICE") {
-                        $short = $target.Split('.')[0]
-                        $results += "$short;$user"
-                    }
+            
+                if ($line -match "\\" -and $line -notmatch "Users logged on") {
+            
+                    $clean = $line.Trim()
+                    $short = $target.Split('.')[0]
+            
+                    $results += "$short;$clean"
                 }
             }
 
