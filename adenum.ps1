@@ -123,31 +123,65 @@ Add-Content $outfile "Null"
 # ===============================
 # 7. ACTIVE SESSIONS
 # ===============================
-write-section "ACTIVE SESSIONS"
-
-$sessionsFound = @()
-
-$hosts = Get-DomainComputer | Select -ExpandProperty dnshostname
-
-foreach ($host in $hosts) {
+    write-section "ACTIVE SESSIONS"
+    
+    $results = @()
+    
     try {
-        $sessions = Get-NetSession -ComputerName $host -ErrorAction SilentlyContinue
-
-        foreach ($s in $sessions) {
-            $user = $s.UserName
-
-            if ($user -match "^S-1-5-21-.*-500$") {
-                $user = "LOCAL_ADMINISTRATOR"
+        $targets = Get-DomainComputer | Select -ExpandProperty dnshostname
+    } catch {
+        $targets = @()
+    }
+    
+    foreach ($target in $targets) {
+    
+        # -------------------------------
+        # METHOD 1: NetSession (SMB sessions)
+        # -------------------------------
+        try {
+            $sessions = Get-NetSession -ComputerName $target -ErrorAction SilentlyContinue
+    
+            foreach ($s in $sessions) {
+                $user = $s.UserName
+    
+                if ($user -match "^S-1-5-21-.*-500$") {
+                    $user = "LOCAL_ADMINISTRATOR"
+                }
+    
+                if ($user) {
+                    $results += "$target;$user"
+                }
             }
+        } catch {}
+    
+        # -------------------------------
+        # METHOD 2: NetLoggedon (logged-on users)
+        # -------------------------------
+        try {
+            $logged = Get-NetLoggedon -ComputerName $target -ErrorAction SilentlyContinue
+    
+            foreach ($l in $logged) {
+                $user = $l.UserName
+    
+                if ($user -match "^S-1-5-21-.*-500$") {
+                    $user = "LOCAL_ADMINISTRATOR"
+                }
+    
+                if ($user) {
+                    $results += "$target;$user"
+                }
+            }
+        } catch {}
+    }
 
-            "$host;$user" | Add-Content $outfile
-        }
-    } catch {}
-}
-
-if (-not (Select-String -Path $outfile -Pattern "ACTIVE SESSIONS" -Quiet)) {
-    Add-Content $outfile "Null"
-}
+    # -------------------------------
+    # OUTPUT
+    # -------------------------------
+    if ($results.Count -eq 0) {
+        Add-Content $outfile "Null"
+    } else {
+        $results | Sort-Object -Unique | Add-Content $outfile
+    }
 
 # ===============================
 # 8. KERBEROASTABLE USERS
