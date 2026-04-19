@@ -125,18 +125,28 @@ Add-Content $outfile "Null"
 # ===============================
 write-section "ACTIVE SESSIONS"
 
-$sessions = @()
+$sessionsFound = @()
 
-try {
-    $sessions = Get-NetSession 2>$null
-} catch {}
+$hosts = Get-DomainComputer | Select -ExpandProperty dnshostname
 
-if ($sessions.Count -eq 0) {
+foreach ($host in $hosts) {
+    try {
+        $sessions = Get-NetSession -ComputerName $host -ErrorAction SilentlyContinue
+
+        foreach ($s in $sessions) {
+            $user = $s.UserName
+
+            if ($user -match "^S-1-5-21-.*-500$") {
+                $user = "LOCAL_ADMINISTRATOR"
+            }
+
+            "$host;$user" | Add-Content $outfile
+        }
+    } catch {}
+}
+
+if (-not (Select-String -Path $outfile -Pattern "ACTIVE SESSIONS" -Quiet)) {
     Add-Content $outfile "Null"
-} else {
-    $sessions | ForEach-Object {
-        "$($_.ComputerName);$($_.UserName)" | Add-Content $outfile
-    }
 }
 
 # ===============================
