@@ -622,7 +622,7 @@ spray_noauth target1
 ```
 
 
-## 8. spray_auth
+## 9. spray_auth
 
 **Deskripsi:** Shortcut cepat untuk spray bruteforce user dan password (coba semua protokol nxc: smb, ssh, ldap, ftp, wmi, winrm, rdp, vnc, mssql, nfs)
 
