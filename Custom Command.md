@@ -719,7 +719,7 @@ for proto in "${PROTOCOLS[@]}"; do
                 fi
 
                 # --- 2. STRATEGY: DOMAIN AUTH ---
-                if [[ "$USER_COMPLETED" == "false" && "$proto" =~ ^(smb|rdp|wmi|winrm|mssql|ldap)$ ]]; then
+                if [[ "$USER_COMPLETED" == "false" && "$proto" =~ ^(smb|rdp|wmi|winrm|mssql)$ ]]; then
                     echo -e "${PURPLE}[EXEC] nxc $proto $ip -u '$user' -p '$pass' -d '$DOMAIN'${NC}"
                     
                     timeout 25s nxc "$proto" "$ip" -u "$user" -p "$pass" -d "$DOMAIN" --no-progress > .tmp_res 2>&1
