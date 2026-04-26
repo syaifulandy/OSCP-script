@@ -500,3 +500,126 @@ sudo ip route add $1 dev $IFACE
 ```bash
 ligolo-route 172.16.6.0/24
 ```
+
+## 7. spray_noauth
+
+**Deskripsi:** Shortcut cepat untuk spray enumerasi awal (net exec / nxc) tanpa user dan password (coba scan port semua protokol yang disupport nxc: smb, ssh, ldap, ftp, wmi, winrm, rdp, vnc, mssql, nfs)
+
+### Setup
+```bash
+sudo nano /usr/local/bin/spray_noauth
+sudo chmod +x /usr/local/bin/spray_noauth
+```
+
+### Script
+```bash
+#!/bin/bash
+
+# --- COLORS ---
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+PURPLE='\033[0;35m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+TARGET_FILE=${1:-target}
+DOMAIN_NAME=${2:-.} 
+OUTDIR="spray_netexec"
+SCAN_FILE="$OUTDIR/nmap_scan.gnmap"
+RAW_OUT="$OUTDIR/raw_spray.txt"
+FINAL_OUT="$OUTDIR/final_summary.txt"
+
+if [[ ! -f "$TARGET_FILE" ]]; then
+    echo -e "${YELLOW}[!] Error: File '$TARGET_FILE' tidak ditemukan.${NC}"
+    exit 1
+fi
+
+mkdir -p "$OUTDIR"
+echo "" > "$RAW_OUT"
+
+echo -e "${PURPLE}====================================================${NC}"
+echo -e "${GREEN}[+] PHASE 1: MASSIVE EFFICIENT PORT SCANNING${NC}"
+echo -e "${PURPLE}====================================================${NC}"
+
+ALL_PORTS="21,22,135,389,445,1433,2049,3389,5900,5985"
+echo -e "${CYAN}[*] Scanning $ALL_PORTS on all targets...${NC}"
+
+nmap -Pn -n -iL "$TARGET_FILE" -p "$ALL_PORTS" --version-intensity 0 -sV --host-timeout 10s --open -oG "$SCAN_FILE" > /dev/null
+
+echo -e "${GREEN}[+] Scan selesai. Memetakan target aktif per protokol...${NC}"
+
+get_ips_by_port() { grep " $1/open/" "$SCAN_FILE" | awk '{print $2}' | sort -u; }
+
+# Mapping & Summary
+echo -e "${BLUE}----------------------------------------------------${NC}"
+for p in 445 3389 135 5985 1433 22 21 5900 2049 389; do
+    case $p in 445) proto="smb";; 3389) proto="rdp";; 135) proto="wmi";; 5985) proto="winrm";; 1433) proto="mssql";; 22) proto="ssh";; 21) proto="ftp";; 5900) proto="vnc";; 2049) proto="nfs";; 389) proto="ldap";; esac
+    get_ips_by_port "$p" > "$OUTDIR/active_$proto.txt"
+    COUNT=$(wc -l < "$OUTDIR/active_$proto.txt")
+    [[ $COUNT -gt 0 ]] && echo -e "${CYAN}[*] $proto:${NC} $COUNT hosts found"
+done
+echo -e "${BLUE}----------------------------------------------------${NC}"
+
+echo -e "\n${PURPLE}====================================================${NC}"
+echo -e "${GREEN}[+] PHASE 2: DEEP ANONYMOUS/GUEST CHECK${NC}"
+echo -e "${PURPLE}====================================================${NC}"
+
+# SMB Testing
+if [[ -s "$OUTDIR/active_smb.txt" ]]; then
+    echo -e "${YELLOW}[*] SMB: Running Null Session check...${NC}"
+    timeout 40s nxc smb "$OUTDIR/active_smb.txt" -u '' -p '' --shares --no-progress 2>&1 | tee -a "$RAW_OUT"
+    
+    echo -e "${YELLOW}[*] SMB: Running Guest Local Auth check...${NC}"
+    timeout 40s nxc smb "$OUTDIR/active_smb.txt" -u 'guest' -p '' --local-auth --shares --no-progress 2>&1 | tee -a "$RAW_OUT"
+    
+    echo -e "${YELLOW}[*] SMB: Running Guest Domain Auth check (Domain: $DOMAIN_NAME)...${NC}"
+    timeout 40s nxc smb "$OUTDIR/active_smb.txt" -u 'guest' -p '' -d "$DOMAIN_NAME" --shares --no-progress 2>&1 | tee -a "$RAW_OUT"
+fi
+
+# FTP Testing
+if [[ -s "$OUTDIR/active_ftp.txt" ]]; then
+    echo -e "${YELLOW}[*] FTP: Running Anonymous check...${NC}"
+    nxc ftp "$OUTDIR/active_ftp.txt" -u 'anonymous' -p '' --no-progress 2>&1 | tee -a "$RAW_OUT"
+fi
+
+# LDAP Testing
+if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
+    echo -e "${YELLOW}[*] LDAP: Running Null Bind check...${NC}"
+    # Menggunakan --trusted-for-delegation atau sekedar check info jika naming-context error
+    nxc ldap "$OUTDIR/active_ldap.txt" -u '' -p '' --no-progress 2>&1 | tee -a "$RAW_OUT"
+fi
+
+# NFS Testing
+if [[ -s "$OUTDIR/active_nfs.txt" ]]; then
+    echo -e "${YELLOW}[*] NFS: Listing exports...${NC}"
+    nxc nfs "$OUTDIR/active_nfs.txt" --no-progress 2>&1 | tee -a "$RAW_OUT"
+fi
+
+echo -e "\n${PURPLE}====================================================${NC}"
+echo -e "${GREEN}[+] PHASE 3: CLEANING & DEDUPLICATION${NC}"
+echo -e "${PURPLE}====================================================${NC}"
+
+# Deduplikasi dan pembersihan
+sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" "$RAW_OUT" | grep -E "\[\+\]|READ|WRITE|Export" | grep -v "STATUS_ACCESS_DENIED" | sort -u > "$FINAL_OUT"
+
+if [[ -s "$FINAL_OUT" ]]; then
+    echo -e "${GREEN}[!] TEMUAN VALID:${NC}"
+    cat "$FINAL_OUT"
+else
+    echo -e "${YELLOW}[!] Tidak ditemukan akses anonymous/guest yang valid.${NC}"
+fi
+
+echo -e "\n${BLUE}[i] Log lengkap di: $RAW_OUT${NC}"
+echo -e "${BLUE}[i] Ringkasan di: $FINAL_OUT${NC}"
+
+```
+
+### Usage
+```bash
+spray_noauth (default baca file "target" yang berisi list IP)
+spray_noauth target1
+```
+
+### Info
+- Default if running without parameter spray = spray target user pass
