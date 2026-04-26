@@ -751,7 +751,7 @@ for proto in "${PROTOCOLS[@]}"; do
 done
 
 # --- MULAI PROSES PEMBERSIHAN (DI LUAR LOOP) ---
-
+FINAL_OUT="$OUTDIR/final_summary.txt" 
 # 1. Bersihkan kode warna ANSI dari log mentah (RAW_OUT)
 if [ -f "$RAW_OUT" ]; then
     sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" "$RAW_OUT" > "$OUTDIR/temp_clean.log"
