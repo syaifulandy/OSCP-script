@@ -527,8 +527,8 @@ TARGET_FILE=${1:-target}
 DOMAIN_NAME=${2:-.} 
 OUTDIR="spray_netexec"
 SCAN_FILE="$OUTDIR/nmap_scan.gnmap"
-RAW_OUT="$OUTDIR/raw_spray.txt"
-FINAL_OUT="$OUTDIR/final_summary.txt"
+RAW_OUT="$OUTDIR/raw_spray_noauth.txt"
+FINAL_OUT="$OUTDIR/final_noauthsummary.txt"
 
 if [[ ! -f "$TARGET_FILE" ]]; then
     echo -e "${YELLOW}[!] Error: File '$TARGET_FILE' tidak ditemukan.${NC}"
