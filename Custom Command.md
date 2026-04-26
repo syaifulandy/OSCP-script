@@ -752,39 +752,40 @@ done
 
 # --- MULAI PROSES PEMBERSIHAN (DI LUAR LOOP) ---
 
-# Bersihkan file output standar
-sed -i 's/\x1B\[[0-9;]*[mK]//g' "$CLEAN_OUT" 2>/dev/null
-sort -u "$CLEAN_OUT" -o "$CLEAN_OUT" 2>/dev/null
-
-echo -e "\n${PURPLE}====================================================${NC}"
-echo -e "${GREEN}[+] PHASE 4: FINAL CLEAN SUMMARY${NC}"
-echo -e "${PURPLE}====================================================${NC}"
-
 # 1. Bersihkan kode warna ANSI dari log mentah (RAW_OUT)
-sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" "$RAW_OUT" > "$OUTDIR/temp_clean.log"
+if [ -f "$RAW_OUT" ]; then
+    sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" "$RAW_OUT" > "$OUTDIR/temp_clean.log"
 
-# 2. Ambil baris penting & Hapus Duplikat
-grep -E "\[\*\]|\[\+\]|LSASSY" "$OUTDIR/temp_clean.log" | sort -u > "$FINAL_OUT"
+    # 2. Ambil baris penting & Hapus Duplikat TANPA MENGUBAH URUTAN
+    # Kita pakai awk '!x[$0]++' untuk menjaga urutan asli (chronological)
+    grep -aE "\[\*\]|\[\+\]|LSASSY" "$OUTDIR/temp_clean.log" | awk '!x[$0]++' > "$FINAL_OUT"
 
-# 3. Cetak ke layar dengan Highlighting agar enak dibaca
-if [[ -s "$FINAL_OUT" ]]; then
-    while IFS= read -r line; do
-        if [[ "$line" == *"LSASSY"* ]]; then
-            echo -e "${PURPLE}${line}${NC}"
-        elif [[ "$line" == *"[+]"* ]]; then
-            echo -e "${GREEN}${line}${NC}"
-        else
-            echo -e "${BLUE}${line}${NC}"
-        fi
-    done < "$FINAL_OUT"
+    echo -e "\n${PURPLE}====================================================${NC}"
+    echo -e "${GREEN}[+] PHASE 4: FINAL CHRONOLOGICAL SUMMARY${NC}"
+    echo -e "${PURPLE}====================================================${NC}"
+
+    # 3. Cetak ke layar dengan Highlighting
+    if [ -s "$FINAL_OUT" ]; then
+        while IFS= read -r line; do
+            if echo "$line" | grep -q "LSASSY"; then
+                echo -e "${PURPLE}${line}${NC}"
+            elif echo "$line" | grep -q "\[+\]"; then
+                echo -e "${GREEN}${line}${NC}"
+            elif echo "$line" | grep -q "\[\*\]"; then
+                echo -e "${BLUE}${line}${NC}"
+            else
+                echo -e "${NC}${line}${NC}"
+            fi
+        done < "$FINAL_OUT"
+    else
+        echo -e "${YELLOW}[!] Tidak ada data ditemukan.${NC}"
+    fi
+
+    # Cleanup
+    rm "$OUTDIR/temp_clean.log" 2>/dev/null
 else
-    echo -e "${YELLOW}[!] Tidak ada temuan valid untuk diringkas.${NC}"
+    echo -e "${RED}[!] File mentah $RAW_OUT tidak ditemukan!${NC}"
 fi
-
-# 4. Cleanup & End
-rm "$OUTDIR/temp_clean.log" 2>/dev/null
-
-echo -e "\n${GREEN}[!] Ringkasan bersih disimpan di: $FINAL_OUT${NC}"
 echo -e "\n${GREEN}[+] ALL PROCESSES FINISHED.${NC}"
 ```
 
