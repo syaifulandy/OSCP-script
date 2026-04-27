@@ -258,7 +258,6 @@ try {
     Find-LocalAdminAccess -ErrorAction SilentlyContinue | ForEach-Object {
         $line = "[+] LOCAL ADMIN ACCESS FOUND: $_"
         Add-Content $outfile $line
-        Write-Host $line -ForegroundColor Green
     }
 } catch { }
 
@@ -273,7 +272,6 @@ foreach ($comp in $allComputers.Name) {
             if ($member.MemberName -match "Domain Users") {
                 $line = "[!] RDP RISK: 'Domain Users' group can RDP to $comp"
                 Add-Content $outfile $line
-                Write-Host $line -ForegroundColor Yellow
             }
         }
     } catch { }
@@ -288,7 +286,6 @@ foreach ($comp in $allComputers.Name) {
             if ($admin.MemberName -match "Domain Users") {
                 $line = "[!!!] CRITICAL: 'Domain Users' is Local Admin on $comp"
                 Add-Content $outfile $line
-                Write-Host $line -ForegroundColor Red
             }
         }
     } catch { continue }
@@ -306,7 +303,6 @@ if ($allAdmins) {
             foreach ($s in $sessions) {
                 $line = "[*] PATH: Admin [$adminName] is logged into [$($s.ComputerName)]"
                 Add-Content $outfile $line
-                Write-Host $line -ForegroundColor Magenta
             }
         }
     }
@@ -400,9 +396,6 @@ if ($spnUsers.Count -eq 0) {
 
         $line = "$tag$sam@$domainName;$service"
         Add-Content $outfile $line
-
-        # Output ke layar dengan warna biar gampang dibedakan
-        Write-Host $line -ForegroundColor $color
     }
 }
 
