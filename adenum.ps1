@@ -2,6 +2,7 @@
 # AD ENUM REPORT (OSCP STYLE - FINAL)
 # powershell -NoProfile -ExecutionPolicy Bypass -File ./adenum.ps1
 # Prerequisite: PowerView.ps1 dan PsLoggedon64.exe
+# Note: Sharphound and Bloodhound to analyze shortest path to Domain Admin (Separate Tools)
 # ===============================
 
 $outfile = "$env:USERPROFILE\ad_enum_report.txt"
