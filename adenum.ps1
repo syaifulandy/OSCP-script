@@ -299,33 +299,35 @@ if ($spn.Count -eq 0) {
 # ===============================
 # 9. ADMIN GROUP MEMBERS
 # ===============================
-write-section "ADMIN GROUP MEMBERS"
+write-section "ADMIN GROUP MEMBERS (BLOODHOUND STYLE)"
 
 $currentSID = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
 $currentUser = whoami
 
-$admins = Get-DomainGroupMember -Identity "Administrators" -ErrorAction SilentlyContinue
+# List group yang mau dipantau (biar luas kayak BloodHound)
+$targetGroups = @("Domain Admins", "Administrators", "Enterprise Admins")
 
-if (-not $admins -or $admins.Count -eq 0) {
-    Add-Content $outfile "Null"
-} else {
-    $admins | ForEach-Object {
+foreach ($groupName in $targetGroups) {
+    # Ambil member secara mendalam (-Recurse)
+    $admins = Get-DomainGroupMember -Identity $groupName -Recurse -ErrorAction SilentlyContinue
 
-        $name = $_.MemberName
-        $sid  = $_.MemberSID
+    if ($admins) {
+        Add-Content $outfile "--- Group: $groupName ---"
+        
+        $admins | ForEach-Object {
+            $name = $_.MemberName
+            $sid  = $_.MemberSID
+            $type = $_.ObjectClass # Deteksi apakah dia User atau Group lain
 
-        $line = "$name;$sid"
+            $line = "$name ($type);$sid"
 
-        # highlight current user (SID match priority)
-        if ($sid -eq $currentSID) {
-            $line = "[CURRENT ADMIN] $line"
+            # Tetap pertahankan deteksi user kamu sekarang
+            if ($sid -eq $currentSID -or $name -match $currentUser) {
+                $line = "[CURRENT ADMIN] $line"
+            }
+
+            Add-Content $outfile $line
         }
-        # fallback match username (kadang SID beda format di domain/local)
-        elseif ($name -match $currentUser) {
-            $line = "[CURRENT ADMIN] $line"
-        }
-
-        Add-Content $outfile $line
     }
 }
 
