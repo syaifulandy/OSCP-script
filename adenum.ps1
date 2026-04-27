@@ -362,19 +362,48 @@ if ($results.Count -eq 0) {
     $results | Sort-Object -Unique | Add-Content $outfile
 }
 
-# ===============================
-# 8. KERBEROASTABLE USERS
-# ===============================
+# =============================================================
+# 8. KERBEROASTABLE USERS (FULL LIST + RELEVANCE HIGHLIGHT)
+# =============================================================
 write-section "KERBEROASTABLE USERS"
 
-$spn = Get-DomainUser -SPN
+$spnUsers = Get-DomainUser -SPN -ErrorAction SilentlyContinue
 $domainName = (Get-Domain).dnsroot
 
-if ($spn.Count -eq 0) {
+# List akun sistem untuk label saja, bukan untuk di-hide
+$noiseAccounts = @("krbtgt", "kadmin")
+
+if ($spnUsers.Count -eq 0) {
     Add-Content $outfile "Null"
 } else {
-    $spn | ForEach-Object {
-        "$($_.samaccountname)@$domainName;$($_.serviceprincipalname)" | Add-Content $outfile
+    foreach ($u in $spnUsers) {
+        $sam = $u.samaccountname
+        $service = $u.serviceprincipalname
+        
+        $tag = ""
+        $color = "Gray"
+
+        # 1. KASTA TERTINGGI: Admin (Data dari Script 3/9)
+        if ($allAdmins.MemberName -contains $sam) {
+            $tag = "[!!! ADMIN - JACKPOT !!!] "
+            $color = "Red"
+        } 
+        # 2. KASTA SISTEM: Noise (Tetap muncul tapi ditandai)
+        elseif ($noiseAccounts -contains $sam.ToLower()) {
+            $tag = "[SYSTEM/NOISE] "
+            $color = "DarkGray"
+        }
+        # 3. KASTA POTENSIAL: User Biasa (Target paling 'manusiawi' buat di-crack)
+        else {
+            $tag = "[USER ACCOUNT - RELEVANT] "
+            $color = "Cyan"
+        }
+
+        $line = "$tag$sam@$domainName;$service"
+        Add-Content $outfile $line
+
+        # Output ke layar dengan warna biar gampang dibedakan
+        Write-Host $line -ForegroundColor $color
     }
 }
 
