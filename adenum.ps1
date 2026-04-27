@@ -301,13 +301,31 @@ if ($spn.Count -eq 0) {
 # ===============================
 write-section "ADMIN GROUP MEMBERS"
 
+$currentSID = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+$currentUser = whoami
+
 $admins = Get-DomainGroupMember -Identity "Administrators" -ErrorAction SilentlyContinue
 
-if ($admins.Count -eq 0) {
+if (-not $admins -or $admins.Count -eq 0) {
     Add-Content $outfile "Null"
 } else {
     $admins | ForEach-Object {
-        "$($_.MemberName);$($_.MemberSID)" | Add-Content $outfile
+
+        $name = $_.MemberName
+        $sid  = $_.MemberSID
+
+        $line = "$name;$sid"
+
+        # highlight current user (SID match priority)
+        if ($sid -eq $currentSID) {
+            $line = "[CURRENT ADMIN] $line"
+        }
+        # fallback match username (kadang SID beda format di domain/local)
+        elseif ($name -match $currentUser) {
+            $line = "[CURRENT ADMIN] $line"
+        }
+
+        Add-Content $outfile $line
     }
 }
 
