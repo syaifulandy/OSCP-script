@@ -69,32 +69,58 @@ if ($users.Count -eq 0) {
     }
 }
 
-# ===============================
-# 3. DOMAIN ADMINS
-# ===============================
-write-section "DOMAIN ADMINS"
+# =============================================================
+# 3. ADMIN GROUP MEMBERS (UPGRADED FROM SCRIPT 9)
+# =============================================================
+write-section "ADMIN GROUP MEMBERS (BLOODHOUND STYLE)"
 
-$da = Get-DomainGroupMember "Domain Admins"
+$currentSID = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+$currentUser = whoami
 
-if ($da.Count -eq 0) {
-    Add-Content $outfile "Null"
-} else {
-    $da | ForEach-Object {
-        "$($_.MemberName)" | Add-Content $outfile
+# Definisikan target grup yang krusial
+$targetGroups = @("Domain Admins", "Administrators", "Enterprise Admins")
+$allAdmins = @() # Inisialisasi variabel global untuk dipakai di Script 6 nanti
+
+foreach ($groupName in $targetGroups) {
+    # Ambil member secara mendalam (Recurse)
+    $admins = Get-DomainGroupMember -Identity $groupName -Recurse -ErrorAction SilentlyContinue
+
+    if ($admins) {
+        $allAdmins += $admins # Simpan ke variabel global
+        Add-Content $outfile "--- Group: $groupName ---"
+        
+        $admins | ForEach-Object {
+            $name = $_.MemberName
+            $sid  = $_.MemberSID
+            $type = $_.ObjectClass 
+
+            $line = "$name ($type);$sid"
+
+            # Highlight jika itu akun kamu sendiri
+            if ($sid -eq $currentSID -or $name -match $currentUser) {
+                $line = "[CURRENT ADMIN] $line"
+            }
+
+            Add-Content $outfile $line
+        }
     }
 }
 
 # ===============================
-# 4. GROUPS
+# 4. GROUPS (WITH DESCRIPTIONS)
 # ===============================
 write-section "GROUPS"
 
-$groups = Get-DomainGroup
+# Ambil Nama dan Deskripsi biar kita tahu fungsi grup itu buat apa
+$groups = Get-DomainGroup -Properties Name, Description
 
 if ($groups.Count -eq 0) {
     Add-Content $outfile "Null"
 } else {
-    $groups | Select -ExpandProperty Name | Add-Content $outfile
+    foreach ($g in $groups) {
+        $line = "$($g.Name) -- Description: $($g.Description)"
+        Add-Content $outfile $line
+    }
 }
 
 # ===============================
@@ -222,63 +248,68 @@ if (-not $foundExploit) {
 
 }
 
-# ===============================
-# 6. BLOODHOUND-LIKE (STEALTH LIMITATION)
-# ===============================
-write-section "LOCAL ADMIN ACCESS (Where can I go?)"
-# Mencari di mana akun kamu saat ini punya hak Local Admin
-# Ini mirip 'Find Computers where Domain Users are Local Admin' tapi khusus user kamu
-Find-LocalAdminAccess -ErrorAction SilentlyContinue | ForEach-Object {
-    Add-Content $outfile "[+] LOCAL ADMIN ACCESS FOUND: $_"
-}
+# =============================================================
+# 6. BLOODHOUND-LIKE (ACTIONABLE QUERIES)
+# =============================================================
+# Asumsi: Script 9 sudah jalan dan mengisi variabel $allAdmins
 
----
+Write-CustomSection "LOCAL ADMIN ACCESS (Where can I go?)"
+# Mencari di mana akun kamu saat ini punya hak Local Admin secara langsung
+try {
+    Find-LocalAdminAccess -ErrorAction SilentlyContinue | ForEach-Object {
+        $line = "[+] LOCAL ADMIN ACCESS FOUND: $_"
+        Add-Content $outfile $line
+        Write-Host $line -ForegroundColor Green
+    }
+} catch { }
 
-write-section "REMOTE DESKTOP USERS (RDP Access)"
-# Mencari siapa saja yang bisa RDP ke server/workstation
-# Fokus ke 'Domain Users' yang punya akses RDP
-$computers = Get-DomainComputer -Properties Name
-foreach ($comp in $computers.name) {
+Write-CustomSection "REMOTE DESKTOP USERS (RDP Access)"
+# Mencari komputer mana yang membolehkan 'Domain Users' login via RDP
+$allComputers = Get-DomainComputer -Properties Name -ErrorAction SilentlyContinue
+foreach ($comp in $allComputers.Name) {
     try {
         $rdpMembers = Get-NetLocalGroupMember -ComputerName $comp -GroupName "Remote Desktop Users" -ErrorAction Stop
         foreach ($member in $rdpMembers) {
+            # BloodHound Logic: Jika Domain Users bisa RDP, itu celah besar
             if ($member.MemberName -match "Domain Users") {
-                Add-Content $outfile "[!] RDP RISK: 'Domain Users' can RDP to $comp"
+                $line = "[!] RDP RISK: 'Domain Users' group can RDP to $comp"
+                Add-Content $outfile $line
+                Write-Host $line -ForegroundColor Yellow
             }
         }
-    } catch {
-        # Biasanya akses denied atau RPC server unavailable, skip aja biar senyap
-    }
+    } catch { }
 }
 
----
-
-write-section "DOMAIN USERS AS LOCAL ADMIN"
-# Cek apakah grup 'Domain Users' secara ceroboh dimasukkan ke Local Admin
-foreach ($comp in $computers.name) {
+Write-CustomSection "DOMAIN USERS AS LOCAL ADMIN"
+# Cek miskonfigurasi: Apakah Domain Users dimasukkan ke grup Administrators lokal?
+foreach ($comp in $allComputers.Name) {
     try {
         $localAdmins = Get-NetLocalGroupMember -ComputerName $comp -GroupName "Administrators" -ErrorAction Stop
         foreach ($admin in $localAdmins) {
             if ($admin.MemberName -match "Domain Users") {
-                Add-Content $outfile "[!!!] CRITICAL: 'Domain Users' is Local Admin on $comp"
+                $line = "[!!!] CRITICAL: 'Domain Users' is Local Admin on $comp"
+                Add-Content $outfile $line
+                Write-Host $line -ForegroundColor Red
             }
         }
     } catch { continue }
 }
 
----
-
-write-section "SHORTEST PATH - SESSIONS (Hunting Admins)"
-# Ini cara manual buat nyari "Path". Kita cari di mana Domain Admin lagi login.
-# Kalau kamu punya Local Admin di mesin tempat DA login, kamu bisa curi kredensialnya (LSASS/Token).
-$daGroup = Get-DomainGroupMember -Identity "Domain Admins" | Select-Object -ExpandProperty MemberName
-
-foreach ($da in $daGroup) {
-    $sessions = Get-NetSession -UserName $da -ErrorAction SilentlyContinue
-    if ($sessions) {
-        foreach ($s in $sessions) {
-            Add-Content $outfile "[*] PATH FOUND: Domain Admin [$da] is logged into [$($s.ComputerName)]"
-            Add-Content $outfile "    -> Action: Compromise $($s.ComputerName) to get Domain Admin!"
+Write-CustomSection "SHORTEST PATH - SESSIONS (Hunting Admins)"
+# Menggunakan data dari Script 9 ($allAdmins) untuk mencari di mana mereka login
+if ($allAdmins) {
+    # Ambil nama unik saja supaya tidak scanning berulang untuk user yang sama
+    $uniqueAdminNames = $allAdmins.MemberName | Select-Object -Unique
+    
+    foreach ($adminName in $uniqueAdminNames) {
+        # Cari session aktif user admin tersebut di jaringan
+        $sessions = Get-NetSession -UserName $adminName -ErrorAction SilentlyContinue
+        if ($sessions) {
+            foreach ($s in $sessions) {
+                $line = "[*] PATH: Admin [$adminName] is logged into [$($s.ComputerName)]"
+                Add-Content $outfile $line
+                Write-Host $line -ForegroundColor Magenta
+            }
         }
     }
 }
@@ -344,40 +375,6 @@ if ($spn.Count -eq 0) {
 } else {
     $spn | ForEach-Object {
         "$($_.samaccountname)@$domainName;$($_.serviceprincipalname)" | Add-Content $outfile
-    }
-}
-# ===============================
-# 9. ADMIN GROUP MEMBERS
-# ===============================
-write-section "ADMIN GROUP MEMBERS (BLOODHOUND STYLE)"
-
-$currentSID = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
-$currentUser = whoami
-
-# List group yang mau dipantau (biar luas kayak BloodHound)
-$targetGroups = @("Domain Admins", "Administrators", "Enterprise Admins")
-
-foreach ($groupName in $targetGroups) {
-    # Ambil member secara mendalam (-Recurse)
-    $admins = Get-DomainGroupMember -Identity $groupName -Recurse -ErrorAction SilentlyContinue
-
-    if ($admins) {
-        Add-Content $outfile "--- Group: $groupName ---"
-        
-        $admins | ForEach-Object {
-            $name = $_.MemberName
-            $sid  = $_.MemberSID
-            $type = $_.ObjectClass # Deteksi apakah dia User atau Group lain
-
-            $line = "$name ($type);$sid"
-
-            # Tetap pertahankan deteksi user kamu sekarang
-            if ($sid -eq $currentSID -or $name -match $currentUser) {
-                $line = "[CURRENT ADMIN] $line"
-            }
-
-            Add-Content $outfile $line
-        }
     }
 }
 
