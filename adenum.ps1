@@ -107,19 +107,27 @@ foreach ($groupName in $targetGroups) {
 }
 
 # ===============================
-# 4. GROUPS (WITH DESCRIPTIONS)
+# 4. RELEVANT GROUPS (FILTERED)
 # ===============================
-write-section "GROUPS"
+write-section "RELEVANT GROUPS"
 
-# Ambil Nama dan Deskripsi biar kita tahu fungsi grup itu buat apa
+# Daftar kata kunci grup yang biasanya punya celah atau akses tinggi
+$valuableKeywords = @("Admin", "Remote", "Desktop", "SQL", "Backup", "GPO", "Exchange", "SharePoint", "VPN", "IT", "Dev")
+
 $groups = Get-DomainGroup -Properties Name, Description
 
 if ($groups.Count -eq 0) {
     Add-Content $outfile "Null"
 } else {
     foreach ($g in $groups) {
-        $line = "$($g.Name) -- Description: $($g.Description)"
-        Add-Content $outfile $line
+        # Hanya ambil yang namanya cocok dengan kata kunci di atas
+        foreach ($key in $valuableKeywords) {
+            if ($g.Name -match $key) {
+                $line = "$($g.Name) -- Description: $($g.Description)"
+                Add-Content $outfile $line
+                break # Pindah ke grup berikutnya kalau sudah ketemu satu match
+            }
+        }
     }
 }
 
