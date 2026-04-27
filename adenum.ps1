@@ -225,14 +225,63 @@ if (-not $foundExploit) {
 # ===============================
 # 6. BLOODHOUND-LIKE (STEALTH LIMITATION)
 # ===============================
-write-section "RDP Access"
-Add-Content $outfile "Null"
+write-section "LOCAL ADMIN ACCESS (Where can I go?)"
+# Mencari di mana akun kamu saat ini punya hak Local Admin
+# Ini mirip 'Find Computers where Domain Users are Local Admin' tapi khusus user kamu
+Find-LocalAdminAccess -ErrorAction SilentlyContinue | ForEach-Object {
+    Add-Content $outfile "[+] LOCAL ADMIN ACCESS FOUND: $_"
+}
 
-write-section "Local Admin Access"
-Add-Content $outfile "Null"
+---
 
-write-section "Shortest Path to Domain Admins"
-Add-Content $outfile "Null"
+write-section "REMOTE DESKTOP USERS (RDP Access)"
+# Mencari siapa saja yang bisa RDP ke server/workstation
+# Fokus ke 'Domain Users' yang punya akses RDP
+$computers = Get-DomainComputer -Properties Name
+foreach ($comp in $computers.name) {
+    try {
+        $rdpMembers = Get-NetLocalGroupMember -ComputerName $comp -GroupName "Remote Desktop Users" -ErrorAction Stop
+        foreach ($member in $rdpMembers) {
+            if ($member.MemberName -match "Domain Users") {
+                Add-Content $outfile "[!] RDP RISK: 'Domain Users' can RDP to $comp"
+            }
+        }
+    } catch {
+        # Biasanya akses denied atau RPC server unavailable, skip aja biar senyap
+    }
+}
+
+---
+
+write-section "DOMAIN USERS AS LOCAL ADMIN"
+# Cek apakah grup 'Domain Users' secara ceroboh dimasukkan ke Local Admin
+foreach ($comp in $computers.name) {
+    try {
+        $localAdmins = Get-NetLocalGroupMember -ComputerName $comp -GroupName "Administrators" -ErrorAction Stop
+        foreach ($admin in $localAdmins) {
+            if ($admin.MemberName -match "Domain Users") {
+                Add-Content $outfile "[!!!] CRITICAL: 'Domain Users' is Local Admin on $comp"
+            }
+        }
+    } catch { continue }
+}
+
+---
+
+write-section "SHORTEST PATH - SESSIONS (Hunting Admins)"
+# Ini cara manual buat nyari "Path". Kita cari di mana Domain Admin lagi login.
+# Kalau kamu punya Local Admin di mesin tempat DA login, kamu bisa curi kredensialnya (LSASS/Token).
+$daGroup = Get-DomainGroupMember -Identity "Domain Admins" | Select-Object -ExpandProperty MemberName
+
+foreach ($da in $daGroup) {
+    $sessions = Get-NetSession -UserName $da -ErrorAction SilentlyContinue
+    if ($sessions) {
+        foreach ($s in $sessions) {
+            Add-Content $outfile "[*] PATH FOUND: Domain Admin [$da] is logged into [$($s.ComputerName)]"
+            Add-Content $outfile "    -> Action: Compromise $($s.ComputerName) to get Domain Admin!"
+        }
+    }
+}
 
 # ===============================
 # 7. ACTIVE SESSIONS (PsLoggedon)
