@@ -296,6 +296,20 @@ if ($spn.Count -eq 0) {
         "$($_.samaccountname)@$domainName;$($_.serviceprincipalname)" | Add-Content $outfile
     }
 }
+# ===============================
+# 9. ADMIN GROUP MEMBERS
+# ===============================
+write-section "ADMIN GROUP MEMBERS"
+
+$admins = Get-DomainGroupMember -Identity "Administrators" -ErrorAction SilentlyContinue
+
+if ($admins.Count -eq 0) {
+    Add-Content $outfile "Null"
+} else {
+    $admins | ForEach-Object {
+        "$($_.MemberName);$($_.MemberSID)" | Add-Content $outfile
+    }
+}
 
 # ===============================
 # DONE
