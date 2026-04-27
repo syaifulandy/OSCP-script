@@ -70,7 +70,7 @@ if ($users.Count -eq 0) {
 }
 
 # =============================================================
-# 3. ADMIN GROUP MEMBERS (UPGRADED FROM SCRIPT 9)
+# 3. ADMIN GROUP MEMBERS 
 # =============================================================
 write-section "ADMIN GROUP MEMBERS (BLOODHOUND STYLE)"
 
@@ -251,9 +251,8 @@ if (-not $foundExploit) {
 # =============================================================
 # 6. BLOODHOUND-LIKE (ACTIONABLE QUERIES)
 # =============================================================
-# Asumsi: Script 9 sudah jalan dan mengisi variabel $allAdmins
 
-Write-CustomSection "LOCAL ADMIN ACCESS (Where can I go?)"
+write-section "LOCAL ADMIN ACCESS (Where can I go?)"
 # Mencari di mana akun kamu saat ini punya hak Local Admin secara langsung
 try {
     Find-LocalAdminAccess -ErrorAction SilentlyContinue | ForEach-Object {
@@ -263,7 +262,7 @@ try {
     }
 } catch { }
 
-Write-CustomSection "REMOTE DESKTOP USERS (RDP Access)"
+write-section "REMOTE DESKTOP USERS (RDP Access)"
 # Mencari komputer mana yang membolehkan 'Domain Users' login via RDP
 $allComputers = Get-DomainComputer -Properties Name -ErrorAction SilentlyContinue
 foreach ($comp in $allComputers.Name) {
@@ -280,7 +279,7 @@ foreach ($comp in $allComputers.Name) {
     } catch { }
 }
 
-Write-CustomSection "DOMAIN USERS AS LOCAL ADMIN"
+write-section "DOMAIN USERS AS LOCAL ADMIN"
 # Cek miskonfigurasi: Apakah Domain Users dimasukkan ke grup Administrators lokal?
 foreach ($comp in $allComputers.Name) {
     try {
@@ -295,15 +294,14 @@ foreach ($comp in $allComputers.Name) {
     } catch { continue }
 }
 
-Write-CustomSection "SHORTEST PATH - SESSIONS (Hunting Admins)"
-# Menggunakan data dari Script 9 ($allAdmins) untuk mencari di mana mereka login
+write-section "SHORTEST PATH - SESSIONS (Hunting Admins)"
 if ($allAdmins) {
-    # Ambil nama unik saja supaya tidak scanning berulang untuk user yang sama
     $uniqueAdminNames = $allAdmins.MemberName | Select-Object -Unique
     
     foreach ($adminName in $uniqueAdminNames) {
-        # Cari session aktif user admin tersebut di jaringan
-        $sessions = Get-NetSession -UserName $adminName -ErrorAction SilentlyContinue
+        # FIX: Pakai Get-NetSession lalu filter manual supaya tidak error parameter
+        $sessions = Get-NetSession -ErrorAction SilentlyContinue | Where-Object { $_.UserName -match $adminName }
+        
         if ($sessions) {
             foreach ($s in $sessions) {
                 $line = "[*] PATH: Admin [$adminName] is logged into [$($s.ComputerName)]"
@@ -313,6 +311,7 @@ if ($allAdmins) {
         }
     }
 }
+
 
 # ===============================
 # 7. ACTIVE SESSIONS (PsLoggedon)
