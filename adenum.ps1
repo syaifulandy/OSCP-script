@@ -142,36 +142,63 @@ if ($foundExploit) {
     Add-Content $outfile "[+] No exploitable GPO rights found for current user"
 }
 
-# ===============================
+# =============================================================
 # 6. ACTIONABLE QUERIES (OPTIMIZED SESSION HUNTING)
-# ===============================
+# =============================================================
 write-section "LATERAL MOVEMENT & SESSIONS"
 
-# Find Local Admin Access
-Find-LocalAdminAccess -ErrorAction SilentlyContinue | ForEach-Object { Add-Content $outfile "[+] LOCAL ADMIN ACCESS FOUND: $_" }
+# --- 1. Local Admin Access ---
+$localAdminFound = $false
+Find-LocalAdminAccess -ErrorAction SilentlyContinue | ForEach-Object { 
+    Add-Content $outfile "[+] LOCAL ADMIN ACCESS FOUND: $_"
+    $localAdminFound = $true
+}
+if (-not $localAdminFound) { Add-Content $outfile "Find Local Admin Access: Not found" }
 
-# Optimized Session Hunting (Fetch all sessions ONCE)
+# --- 2. Shortest Path (Admin Session Hunting) ---
+# Ini adalah pengganti SHORTEST PATH yang lebih cepat
+$pathFound = $false
 $allSessions = Get-NetSession -ErrorAction SilentlyContinue
 if ($allAdmins -and $allSessions) {
     $uniqueAdminNames = $allAdmins.MemberName | Select-Object -Unique
     foreach ($adminName in $uniqueAdminNames) {
-        $allSessions | Where-Object { $_.UserName -match $adminName } | ForEach-Object {
-            Add-Content $outfile "[*] PATH: Admin [$adminName] is logged into [$($_.ComputerName)]"
+        $foundSessions = $allSessions | Where-Object { $_.UserName -match $adminName }
+        if ($foundSessions) {
+            foreach ($s in $foundSessions) {
+                $pathFound = $true
+                Add-Content $outfile "[*] SHORTEST PATH FOUND: Admin [$adminName] is logged into [$($s.ComputerName)]"
+                Add-Content $outfile "    -> Action: Compromise $($s.ComputerName) to steal Admin Token/Hash!"
+            }
         }
     }
 }
+if (-not $pathFound) { Add-Content $outfile "Shortest Path to Admin (Sessions): Not found" }
 
-# RDP Risk & Domain Users as Local Admin
+# --- 3. RDP & Critical Local Admin Misconfiguration ---
+$rdpRiskFound = $false
+$critAdminFound = $false
 $allComputers = $hosts.dnshostname
-foreach ($comp in $allComputers) {
-    try {
-        $rdp = Get-NetLocalGroupMember -ComputerName $comp -GroupName "Remote Desktop Users" -ErrorAction SilentlyContinue
-        if ($rdp.MemberName -match "Domain Users") { Add-Content $outfile "[!] RDP RISK: 'Domain Users' can RDP to $comp" }
-        
-        $localAdmins = Get-NetLocalGroupMember -ComputerName $comp -GroupName "Administrators" -ErrorAction SilentlyContinue
-        if ($localAdmins.MemberName -match "Domain Users") { Add-Content $outfile "[!!!] CRITICAL: 'Domain Users' is Local Admin on $comp" }
-    } catch {}
+
+if ($allComputers) {
+    foreach ($comp in $allComputers) {
+        try {
+            $rdp = Get-NetLocalGroupMember -ComputerName $comp -GroupName "Remote Desktop Users" -ErrorAction SilentlyContinue
+            if ($rdp.MemberName -match "Domain Users") { 
+                Add-Content $outfile "[!] RDP RISK: 'Domain Users' can RDP to $comp"
+                $rdpRiskFound = $true
+            }
+            
+            $localAdmins = Get-NetLocalGroupMember -ComputerName $comp -GroupName "Administrators" -ErrorAction SilentlyContinue
+            if ($localAdmins.MemberName -match "Domain Users") { 
+                Add-Content $outfile "[!!!] CRITICAL: 'Domain Users' is Local Admin on $comp"
+                $critAdminFound = $true
+            }
+        } catch {}
+    }
 }
+
+if (-not $rdpRiskFound) { Add-Content $outfile "Servers/Workstation where Domain Users can RDP: Not found" }
+if (-not $critAdminFound) { Add-Content $outfile "Computers where Domain Users are Local Admin: Not found" }
 
 # ===============================
 # 7. AS-REP ROASTING
