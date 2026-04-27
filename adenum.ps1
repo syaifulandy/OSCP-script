@@ -34,6 +34,8 @@ $dnsRoot = $domainObj.dnsroot
 # ===============================
 # 1. HOSTS
 # ===============================
+# Section 1
+Write-Host "[>] Enumerating Hosts..." -ForegroundColor Cyan
 write-section "HOSTS"
 $hosts = Get-DomainComputer -Properties dnshostname, OperatingSystem
 if ($hosts) {
@@ -47,12 +49,16 @@ if ($hosts) {
 # ===============================
 # 2. USERS
 # ===============================
+# Section 2
+Write-Host "[>] Enumerating Domain Users..." -ForegroundColor Cyan
 write-section "USERS"
 Get-DomainUser -Properties samaccountname | ForEach-Object { "$($_.samaccountname)@$domainName" } | Add-Content $outfile
 
 # ===============================
 # 3. ADMIN GROUP MEMBERS (RECURSIVE)
 # ===============================
+# Section 3
+Write-Host "[>] Mapping Admin Groups (Recursive)..." -ForegroundColor Cyan
 write-section "ADMIN GROUP MEMBERS (BLOODHOUND STYLE)"
 $currentSID = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
 $currentUser = whoami
@@ -75,6 +81,8 @@ foreach ($groupName in $targetGroups) {
 # ===============================
 # 4. RELEVANT GROUPS (FILTERED)
 # ===============================
+# Section 4
+Write-Host "[>] Filtering Relevant Groups..." -ForegroundColor Cyan
 write-section "RELEVANT GROUPS"
 $valuableKeywords = "Admin|Remote|Desktop|SQL|Backup|GPO|Exchange|SharePoint|VPN|IT|Dev"
 Get-DomainGroup -Properties Name, Description | Where-Object { $_.Name -match $valuableKeywords } | ForEach-Object {
@@ -84,6 +92,8 @@ Get-DomainGroup -Properties Name, Description | Where-Object { $_.Name -match $v
 # ===============================
 # 5. GPO EXPLOITABILITY (SharpGPOAbuse Ready)
 # ===============================
+# Section 5
+Write-Host "[>] Checking GPO Exploits (ACLs)..." -ForegroundColor Cyan
 write-section "GPO EXPLOITABILITY"
 $gpos = Get-DomainGPO
 $me = whoami
@@ -147,6 +157,8 @@ if ($foundExploit) {
 # =============================================================
 # 6. ACTIONABLE QUERIES (OPTIMIZED SESSION HUNTING)
 # =============================================================
+# Section 6 (Paling Penting dikasih info karena lambat)
+Write-Host "[>] Hunting Sessions & Local Admin Access (This may take a while)..." -ForegroundColor Yellow
 write-section "LATERAL MOVEMENT & SESSIONS"
 
 # --- 1. Local Admin Access ---
@@ -205,6 +217,8 @@ if (-not $critAdminFound) { Add-Content $outfile "Computers where Domain Users a
 # ===============================
 # 7. AS-REP ROASTING
 # ===============================
+# Section 7
+Write-Host "[>] Checking AS-REP Roasting..." -ForegroundColor Cyan
 write-section "AS-REP ROASTABLE USERS"
 $asrep = Get-DomainUser -PreauthNotRequired -ErrorAction SilentlyContinue
 if ($asrep) {
@@ -214,6 +228,8 @@ if ($asrep) {
 # ===============================
 # 8. KERBEROASTABLE USERS
 # ===============================
+# Section 8
+Write-Host "[>] Checking Kerberoasting..." -ForegroundColor Cyan
 write-section "KERBEROASTABLE USERS"
 $spnUsers = Get-DomainUser -SPN -ErrorAction SilentlyContinue
 $noise = @("krbtgt", "kadmin")
@@ -228,6 +244,8 @@ if ($spnUsers) {
 # ===============================
 # 9. ACTIVE SESSIONS (PsLoggedon)
 # ===============================
+# Section 9
+Write-Host "[>] Running PsLoggedon64 on all targets..." -ForegroundColor Yellow
 write-section "ACTIVE SESSIONS (PSLOGGEDON)"
 $results = @()
 foreach ($target in $allComputers) {
