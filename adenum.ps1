@@ -101,7 +101,14 @@ if ($groups.Count -eq 0) {
 # ===============================
 write-section "GPO"
 
-$gpos = Get-DomainGPO if ($gpos.Count -eq 0) { Add-Content $outfile "Null" } else { $gpos | Select -ExpandProperty displayname | Add-Content $outfile }
+$gpos = Get-DomainGPO
+
+if ($gpos.Count -eq 0) {
+    Add-Content $outfile "Null"
+}
+else {
+    $gpos | Select-Object -ExpandProperty displayname | Add-Content $outfile
+}
 
 $me = whoami
 $gpos = Get-DomainGPO
