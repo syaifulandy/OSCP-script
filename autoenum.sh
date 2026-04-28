@@ -113,17 +113,28 @@ enum_service() {
 
   # HTTP / HTTPS
   if [[ "$service" == http* ]]; then
+    # --- TAMBAHKAN PENGECEKAN WINRM ---
+    # Jika port adalah 5985 atau 5986, lewati FFUF/WPScan
+    if [[ "$port" == "5985" || "$port" == "5986" ]]; then
+      echo -e "${YELLOW}[*] Skipping Web Discovery for WinRM port ($port) on $ip${NC}"
+      return
+    fi
+    # --------------------------------
+
     local url="http://$ip:$port"
     [[ "$port" == "443" ]] && url="https://$ip:$port"
     
     cd "$ip_dir" || return
+    
+    # Logic Deteksi CMS / Fuzzing
     if curl -s -L --max-time 7 "$url" | grep -qi "wordpress"; then
-      echo "[+] WP Detected on $url"
+      echo -e "${GREEN}[+] WP Detected on $url${NC}"
       /opt/wpscan/wpscan.sh "$url" fast
     else
-      echo "[+] Running FFUF on $url"
+      echo -e "${BLUE}[+] Running FFUF on $url${NC}"
       /opt/ffuf/ffufscan.sh path "$url/FUZZ"
     fi
+    
     cd "$BASE_DIR" || return
   fi
 
