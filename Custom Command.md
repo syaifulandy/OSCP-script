@@ -614,7 +614,7 @@ if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
         echo -e "\n${CYAN}>>> Testing LDAP Null Bind: $ip${NC}"
         
         # Cek Null Bind, tampilkan di layar, simpan ke temp, dan masukkan ke log utama
-        nxc ldap "$ip" -u '' -p '' --no-progress 2>&1 | tee .tmp_ldap >> "$RAW_OUT"
+        nxc ldap "$ip" -u '' -p '' --no-progress 2>&1 | tee .tmp_ldap | tee -a "$RAW_OUT"
         
         if grep -q "\[+\]" .tmp_ldap; then
             echo -e "${GREEN}[!] SUCCESS: Null Bind found on $ip!${NC}"
@@ -631,7 +631,7 @@ if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
             nxc ldap "$ip" -u '' -p '' --pass-pol > "$LDAP_DUMP_DIR/password_policy.txt" 2>&1
 
             # --- START GENERATING SUMMARY ---
-            echo -e "${PURPLE} AD ENUMERATION SUMMARY...${NC}"
+            echo -e "${PURPLE} [SUMMARY] CREATING ENUMERATION SUMMARY...${NC}"
             echo -e "==== AD ENUMERATION SUMMARY ($ip) ====" > "$SUMMARY_FILE"
 
             # A. Parsing Groups (Member > 0)
