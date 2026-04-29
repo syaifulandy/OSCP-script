@@ -577,10 +577,34 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
     timeout 40s nxc smb "$OUTDIR/active_smb.txt" -u 'guest' -p '' -d "$DOMAIN_NAME" --shares --no-progress 2>&1 | tee -a "$RAW_OUT"
 fi
 
-# FTP Testing
+# FTP Testing & Auto-LS
 if [[ -s "$OUTDIR/active_ftp.txt" ]]; then
-    echo -e "${YELLOW}[*] FTP: Running Anonymous check...${NC}"
-    nxc ftp "$OUTDIR/active_ftp.txt" -u 'anonymous' -p '' --no-progress 2>&1 | tee -a "$RAW_OUT"
+    echo -e "${YELLOW}[*] FTP: Checking Anonymous Login & Listing Files...${NC}"
+    
+    while IFS= read -r ip; do
+        echo -e "\n${CYAN}>>> Testing FTP Anonymous: $ip${NC}"
+        
+        # Jalankan NXC dengan flag --ls untuk melihat isi root directory
+        nxc ftp "$ip" -u 'anonymous' -p '' --ls --no-progress > .tmp_ftp 2>&1
+        cat .tmp_ftp >> "$RAW_OUT"
+
+        if grep -q "\[+\]" .tmp_ftp; then
+            echo -e "${GREEN}[!] SUCCESS: Anonymous FTP on $ip!${NC}"
+            
+            # Simpan daftar file ke file terpisah agar mudah dibaca
+            FTP_LOG="$OUTDIR/ftp_files_$ip.txt"
+            cp .tmp_ftp "$FTP_LOG"
+            
+            echo -e "${BLUE}[i] File list saved to $FTP_LOG${NC}"
+            
+            # Highlight jika ada file menarik
+            if grep -iE "pass|pwd|conf|secret|user|backup|key" "$FTP_LOG"; then
+                echo -e "${RED}[!!!] ALERT: Interesting files found on FTP $ip!${NC}"
+                grep -iE "pass|pwd|conf|secret|user|backup|key" "$FTP_LOG"
+            fi
+        fi
+    done < "$OUTDIR/active_ftp.txt"
+    rm -f .tmp_ftp
 fi
 
 # LDAP Testing & Null Bind Enumeration via NXC
