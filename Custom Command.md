@@ -616,6 +616,7 @@ if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
         
         # 1. Cek Null Bind Awal
         nxc ldap "$ip" -u '' -p '' --no-progress > .tmp_ldap 2>&1
+        cat .tmp_ldap >> "$RAW_OUT"
         
         if grep -q "\[+\]" .tmp_ldap; then
             echo -e "${GREEN}[!] SUCCESS: Null Bind found on $ip!${NC}"
