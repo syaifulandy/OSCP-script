@@ -634,14 +634,27 @@ if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
             echo -e "${PURPLE} [SUMMARY] CREATING ENUMERATION SUMMARY...${NC}"
             echo -e "==== AD ENUMERATION SUMMARY ($ip) ====" > "$SUMMARY_FILE"
 
-            # A. Parsing Groups (Member > 0)
-            echo -e "\n[Groups with Members]" >> "$SUMMARY_FILE"
+
+            # A. Parsing Groups (The "Tank" Version)
+            echo -e "${PURPLE} [SUMMARY] Extracting Groups...${NC}"
             echo "GroupName;Description;MemberCount" >> "$SUMMARY_FILE"
-            grep "LDAP" "$LDAP_DUMP_DIR/groups.txt" | grep -vE "\[\*\]|\[\+\]|\-Group\-" | sed -E 's/^.*[0-9]{3}\s+\S+\s+//' | while read -r line; do
-                count=$(echo "$line" | grep -oP '\s\d+\s' | head -n 1 | tr -d ' ')
+            
+            grep "LDAP" "$LDAP_DUMP_DIR/groups.txt" | grep -vE "\[\*\]|\[\+\]|\-Group\-" | while read -r line; do
+                # 1. Bersihkan prefix LDAP sampai Hostname
+                # Menggunakan perl untuk hapus 'LDAP [IP] [PORT] [HOST]'
+                clean_line=$(echo "$line" | perl -pe 's/^LDAP\s+\d+\.\d+\.\d+\.\d+\s+\d+\s+\S+\s+//')
+                
+                # 2. Tangkap Member Count (Angka yang sendirian di tengah spasi)
+                # Kita cari angka yang diapit spasi lebar
+                count=$(echo "$clean_line" | perl -nE 'say $1 if /\s+(\d+)\s+/')
+                
                 if [[ ! -z "$count" && "$count" -gt 0 ]]; then
-                    name=$(echo "$line" | sed -E "s/\s+$count\s+.*$//" | xargs)
-                    desc=$(echo "$line" | sed -E "s/^.*$count\s+//" | xargs)
+                    # 3. Nama Grup: Ambil teks SEBELUM angka member
+                    name=$(echo "$clean_line" | perl -pe "s/\s+$count\s+.*$//" | xargs)
+                    
+                    # 4. Deskripsi: Ambil teks SESUDAH angka member
+                    desc=$(echo "$clean_line" | perl -pe "s/^.*?$count\s+//" | xargs)
+                    
                     echo "$name;$desc;$count" >> "$SUMMARY_FILE"
                     echo "$name" >> .tmp_glist_$ip
                 fi
@@ -655,20 +668,24 @@ if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
             done
 
             # C. Group Membership Mapping (Edit Final)
-            echo -e "${PURPLE} [MAPPING] Creating Group Membership...${NC}"
+            echo -e "${PURPLE} [MAPPING] Checking Group Members...${NC}"
             echo -e "\n[Group Membership Mapping]" >> "$SUMMARY_FILE"
             echo "GroupName;Members" >> "$SUMMARY_FILE"
+
             if [[ -f .tmp_glist_$ip ]]; then
                 while read -r gname; do
-                    # 1. Ambil output NXC
-                    # 2. Hapus baris yang mengandung deskripsi panjang (biasanya ada kata 'afforded' atau 'http')
-                    # 3. Gunakan Perl untuk mengambil kata ke-5 (Posisi standar Member Name di NXC LDAP)
+                    # STEP 1: Query NXC khusus grup tersebut
+                    # STEP 2: Ambil baris LDAP, buang baris Deskripsi (yang ada kata 'group')
+                    # STEP 3: Ambil kolom ke-5 (Username)
                     m_list=$(nxc ldap "$ip" -u '' -p '' --groups "$gname" --no-progress 2>/dev/null | \
                              grep "LDAP" | \
-                             grep -vE "\[\*\]|\[\+\]|Members of this group|http" | \
-                             awk '{print $5}' | grep -vE "^$|$gname" | xargs | sed 's/ /, /g')
+                             grep -vE "\[\*\]|\[\+\]|Members of this group|Description" | \
+                             awk '{print $5}' | xargs | sed 's/ /, /g')
 
-                    if [[ ! -z "$m_list" ]]; then
+                    # STEP 4: Bersihkan hasil jika ada karakter [-] atau sampah
+                    m_list=$(echo "$m_list" | sed 's/\[-\]//g' | xargs)
+
+                    if [[ ! -z "$m_list" && "$m_list" != "members" ]]; then
                         echo "$gname;$m_list" >> "$SUMMARY_FILE"
                     fi
                 done < .tmp_glist_$ip
