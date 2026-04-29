@@ -147,7 +147,7 @@ enum_service() {
   # FTP
   if [[ "$service" == ftp* ]]; then
     echo "[+] Checking FTP Anonymous..."
-    nmap -p "$port" --script ftp-anon "$ip" > "$ip_dir/ftp.txt" 2>/dev/null
+    nmap -Pn -p "$port" -sCV "$ip" > "$ip_dir/ftp.txt" 2>/dev/null
   fi
 }
 
