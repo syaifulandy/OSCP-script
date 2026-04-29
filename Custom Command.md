@@ -583,9 +583,9 @@ if [[ -s "$OUTDIR/active_ftp.txt" ]]; then
     nxc ftp "$OUTDIR/active_ftp.txt" -u 'anonymous' -p '' --no-progress 2>&1 | tee -a "$RAW_OUT"
 fi
 
-# LDAP Testing & Null Bind Enumeration
+# LDAP Testing & Null Bind Enumeration via NXC
 if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
-    echo -e "${YELLOW}[*] LDAP: Checking Null Bind & Auto-Dumping...${NC}"
+    echo -e "${YELLOW}[*] LDAP: Checking Null Bind & Enumerating via NXC...${NC}"
     
     while IFS= read -r ip; do
         echo -e "\n${CYAN}>>> Testing LDAP Null Bind: $ip${NC}"
@@ -597,24 +597,33 @@ if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
         if grep -q "\[+\]" .tmp_ldap; then
             echo -e "${GREEN}[!] SUCCESS: Null Bind found on $ip!${NC}"
             
-            # 2. Siapkan Folder Output per IP
-            LDAP_DUMP_DIR="$OUTDIR/ldap_dump_$ip"
+            # 2. Folder Output per IP
+            LDAP_DUMP_DIR="$OUTDIR/ldap_nxc_$ip"
             mkdir -p "$LDAP_DUMP_DIR"
 
-            echo -e "${PURPLE}[EXEC] Running ldapdomaindump to $LDAP_DUMP_DIR...${NC}"
+            echo -e "${PURPLE}[EXEC] Enumerating Users, Groups, Computers, and Policy...${NC}"
             
-            # 3. Eksekusi ldapdomaindump
-            # Kita arahkan output ke folder spesifik agar tidak berantakan
-            ldapdomaindump "$ip" -u '' -p '' -o "$LDAP_DUMP_DIR" > /dev/null 2>&1
-            
-            # 4. Verifikasi hasil
-            if [[ -f "$LDAP_DUMP_DIR/domain_users.html" ]]; then
-                echo -e "${GREEN}[+] Dump Completed! Users found. Check: $LDAP_DUMP_DIR/domain_users.html${NC}"
-                
-                # Bonus: Ekstrak user list secara otomatis untuk spray selanjutnya
-                grep -oP '(?<=<td>)[^<]+(?=</td>)' "$LDAP_DUMP_DIR/domain_users.grep" 2>/dev/null | sort -u > "$OUTDIR/extracted_users_$ip.txt"
-                echo -e "${BLUE}[i] Extracted users saved to $OUTDIR/extracted_users_$ip.txt${NC}"
+            # 3. Ambil data terpenting (Users, Groups, Computers, Pass-Pol)
+            # Simpan output mentah untuk record
+            nxc ldap "$ip" -u '' -p '' --users > "$LDAP_DUMP_DIR/users.txt" 2>&1
+            nxc ldap "$ip" -u '' -p '' --groups > "$LDAP_DUMP_DIR/groups.txt" 2>&1
+            nxc ldap "$ip" -u '' -p '' --computers > "$LDAP_DUMP_DIR/computers.txt" 2>&1
+            nxc ldap "$ip" -u '' -p '' --pass-pol > "$LDAP_DUMP_DIR/password_policy.txt" 2>&1
+
+            # 4. Ekstraksi User List (Murni Username) untuk Spraying
+            # Kita ambil kolom username dari output NXC
+            grep "LDAP" "$LDAP_DUMP_DIR/users.txt" | awk '{print $5}' | grep -vE "Username|^$" | sort -u > "$OUTDIR/users_only_$ip.txt"
+
+            if [[ -s "$OUTDIR/users_only_$ip.txt" ]]; then
+                COUNT=$(wc -l < "$OUTDIR/users_only_$ip.txt")
+                echo -e "${GREEN}[+] Successfully enumerated $COUNT users!${NC}"
+                echo -e "${BLUE}[i] Userlist for spraying: $OUTDIR/users_only_$ip.txt${NC}"
             fi
+            
+            # Info tambahan: Cek Password Policy (penting biar nggak lockout)
+            LOCKOUT=$(grep -i "lockout" "$LDAP_DUMP_DIR/password_policy.txt" | head -n 1)
+            echo -e "${YELLOW}[!] Policy: $LOCKOUT${NC}"
+            
         else
             echo -e "${RED}[-] Null Bind failed on $ip.${NC}"
         fi
