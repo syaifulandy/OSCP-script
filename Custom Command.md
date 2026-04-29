@@ -660,16 +660,20 @@ if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
             echo "GroupName;Members" >> "$SUMMARY_FILE"
             if [[ -f .tmp_glist_$ip ]]; then
                 while read -r gname; do
-                    # 1. Jalankan query NXC untuk grup spesifik
-                    # 2. Ambil baris LDAP, buang banner [*] [+], ambil kolom terakhir ($NF)
-                    m_list=$(nxc ldap "$ip" -u '' -p '' --groups "$gname" --no-progress 2>/dev/null | grep "LDAP" | grep -vE "\[\*\]|\[\+\]" | awk '{print $NF}' | xargs | sed 's/ /, /g')
-                    # 3. Hanya tulis ke summary kalau ada membernya
+                    # 1. Ambil output NXC
+                    # 2. Hapus baris yang mengandung deskripsi panjang (biasanya ada kata 'afforded' atau 'http')
+                    # 3. Gunakan Perl untuk mengambil kata ke-5 (Posisi standar Member Name di NXC LDAP)
+                    m_list=$(nxc ldap "$ip" -u '' -p '' --groups "$gname" --no-progress 2>/dev/null | \
+                             grep "LDAP" | \
+                             grep -vE "\[\*\]|\[\+\]|Members of this group|http" | \
+                             awk '{print $5}' | grep -vE "^$|$gname" | xargs | sed 's/ /, /g')
+
                     if [[ ! -z "$m_list" ]]; then
                         echo "$gname;$m_list" >> "$SUMMARY_FILE"
                     fi
-                    done < .tmp_glist_$ip
-                    rm -f .tmp_glist_$ip
-                fi
+                done < .tmp_glist_$ip
+                rm -f .tmp_glist_$ip
+            fi
             # D. User Details (Parsing users.txt)
             echo -e "\n[User Details]" >> "$SUMMARY_FILE"
             echo "Username;LastPWSet;BadPW;Description" >> "$SUMMARY_FILE"
