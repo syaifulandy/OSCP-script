@@ -584,9 +584,8 @@ if [[ -s "$OUTDIR/active_ftp.txt" ]]; then
     while IFS= read -r ip; do
         echo -e "\n${CYAN}>>> Testing FTP Anonymous: $ip${NC}"
         
-        # Jalankan NXC dengan flag --ls untuk melihat isi root directory
-        nxc ftp "$ip" -u 'anonymous' -p '' --ls --no-progress > .tmp_ftp 2>&1
-        cat .tmp_ftp >> "$RAW_OUT"
+        # Jalankan NXC FTP, tampilkan di layar, simpan ke file temporary, dan append ke log utama
+        nxc ftp "$ip" -u 'anonymous' -p '' --ls --no-progress 2>&1 | tee .tmp_ftp >> "$RAW_OUT"
 
         if grep -q "\[+\]" .tmp_ftp; then
             echo -e "${GREEN}[!] SUCCESS: Anonymous FTP on $ip!${NC}"
@@ -614,9 +613,8 @@ if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
     while IFS= read -r ip; do
         echo -e "\n${CYAN}>>> Testing LDAP Null Bind: $ip${NC}"
         
-        # 1. Cek Null Bind Awal
-        nxc ldap "$ip" -u '' -p '' --no-progress > .tmp_ldap 2>&1
-        cat .tmp_ldap >> "$RAW_OUT"
+        # Cek Null Bind, tampilkan di layar, simpan ke temp, dan masukkan ke log utama
+        nxc ldap "$ip" -u '' -p '' --no-progress 2>&1 | tee .tmp_ldap >> "$RAW_OUT"
         
         if grep -q "\[+\]" .tmp_ldap; then
             echo -e "${GREEN}[!] SUCCESS: Null Bind found on $ip!${NC}"
