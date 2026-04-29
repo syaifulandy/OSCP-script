@@ -614,48 +614,89 @@ if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
     while IFS= read -r ip; do
         echo -e "\n${CYAN}>>> Testing LDAP Null Bind: $ip${NC}"
         
-        # 1. Cek Null Bind menggunakan NXC
+        # 1. Cek Null Bind Awal
         nxc ldap "$ip" -u '' -p '' --no-progress > .tmp_ldap 2>&1
-        cat .tmp_ldap >> "$RAW_OUT"
-
+        
         if grep -q "\[+\]" .tmp_ldap; then
             echo -e "${GREEN}[!] SUCCESS: Null Bind found on $ip!${NC}"
             
-            # 2. Folder Output per IP
             LDAP_DUMP_DIR="$OUTDIR/ldap_nxc_$ip"
             mkdir -p "$LDAP_DUMP_DIR"
+            SUMMARY_FILE="$LDAP_DUMP_DIR/summary.txt"
 
-            echo -e "${PURPLE}[EXEC] Enumerating Users, Groups, Computers, and Policy...${NC}"
-            
-            # 3. Ambil data terpenting (Users, Groups, Computers, Pass-Pol)
-            # Simpan output mentah untuk record
+            # 2. Ambil Data Raw (Penting untuk bukti & parsing)
+            echo -e "${PURPLE}[EXEC] Collecting Raw Data...${NC}"
             nxc ldap "$ip" -u '' -p '' --users > "$LDAP_DUMP_DIR/users.txt" 2>&1
             nxc ldap "$ip" -u '' -p '' --groups > "$LDAP_DUMP_DIR/groups.txt" 2>&1
-            nxc ldap "$ip" -u '' -p '' --computers > "$LDAP_DUMP_DIR/computers.txt" 2>&1
+            nxc ldap "$ip" -u '' -p '' --trusted-for-delegation > "$LDAP_DUMP_DIR/delegation.txt" 2>&1
             nxc ldap "$ip" -u '' -p '' --pass-pol > "$LDAP_DUMP_DIR/password_policy.txt" 2>&1
 
-            # 4. Ekstraksi User List (Murni Username) untuk Spraying
-            # Kita ambil kolom username dari output NXC
-            grep "LDAP" "$LDAP_DUMP_DIR/users.txt" | awk '{print $5}' | grep -vE "Username|^$" | sort -u > "$OUTDIR/users_only_$ip.txt"
+            # --- START GENERATING SUMMARY ---
+            echo -e "${PURPLE} AD ENUMERATION SUMMARY...${NC}"
+            echo -e "==== AD ENUMERATION SUMMARY ($ip) ====" > "$SUMMARY_FILE"
 
-            if [[ -s "$OUTDIR/users_only_$ip.txt" ]]; then
-                COUNT=$(wc -l < "$OUTDIR/users_only_$ip.txt")
-                echo -e "${GREEN}[+] Successfully enumerated $COUNT users!${NC}"
-                echo -e "${BLUE}[i] Userlist for spraying: $OUTDIR/users_only_$ip.txt${NC}"
+            # A. Parsing Groups (Member > 0)
+            echo -e "\n[Groups with Members]" >> "$SUMMARY_FILE"
+            echo "GroupName;Description;MemberCount" >> "$SUMMARY_FILE"
+            grep "LDAP" "$LDAP_DUMP_DIR/groups.txt" | grep -vE "\[\*\]|\[\+\]|\-Group\-" | sed -E 's/^.*[0-9]{3}\s+\S+\s+//' | while read -r line; do
+                count=$(echo "$line" | grep -oP '\s\d+\s' | head -n 1 | tr -d ' ')
+                if [[ ! -z "$count" && "$count" -gt 0 ]]; then
+                    name=$(echo "$line" | sed -E "s/\s+$count\s+.*$//" | xargs)
+                    desc=$(echo "$line" | sed -E "s/^.*$count\s+//" | xargs)
+                    echo "$name;$desc;$count" >> "$SUMMARY_FILE"
+                    echo "$name" >> .tmp_glist_$ip
+                fi
+            done
+
+            # B. Unconstrained Delegation (User Only)
+            echo -e "\n[Users with Unconstrained Delegation]" >> "$SUMMARY_FILE"
+            grep "LDAP" "$LDAP_DUMP_DIR/delegation.txt" | grep -vE "\[\*\]|\[\+\]|signing:|channel binding:" | while read -r line; do
+                user_del=$(echo "$line" | sed -E 's/^.*[0-9]{3}\s+\S+\s+//' | xargs)
+                [[ ! -z "$user_del" && ! "$user_del" == *\$ ]] && echo "$user_del" >> "$SUMMARY_FILE"
+            done
+
+            # C. Group Membership Mapping (Live Enumeration)
+            echo -e "\n[Group Membership Mapping]" >> "$SUMMARY_FILE"
+            echo "GroupName;Members" >> "$SUMMARY_FILE"
+            if [[ -f .tmp_glist_$ip ]]; then
+                while read -r gname; do
+                    echo -n "$gname;" >> "$SUMMARY_FILE"
+                    # Pakai logic manual yang sukses: ambil kolom terakhir, gabung pake koma
+                    m_list=$(nxc ldap "$ip" -u '' -p '' --groups "$gname" --no-progress | grep "LDAP" | grep -vE "\[\*\]|\[\+\]" | awk '{print $NF}' | xargs | sed 's/ /, /g')
+                    echo "$m_list" >> "$SUMMARY_FILE"
+                done < .tmp_glist_$ip
+                rm -f .tmp_glist_$ip
             fi
-            
-            # Info tambahan: Cek Password Policy (penting biar nggak lockout)
-            LOCKOUT=$(grep -i "lockout" "$LDAP_DUMP_DIR/password_policy.txt" | head -n 1)
-            echo -e "${YELLOW}[!] Policy: $LOCKOUT${NC}"
+
+            # D. User Details (Parsing users.txt)
+            echo -e "\n[User Details]" >> "$SUMMARY_FILE"
+            echo "Username;LastPWSet;BadPW;Description" >> "$SUMMARY_FILE"
+            grep "LDAP" "$LDAP_DUMP_DIR/users.txt" | grep -vE "\[\*\]|\[\+\]|\-Username\-" | while read -r line; do
+                u_content=$(echo "$line" | sed -E 's/^.*[0-9]{3}\s+\S+\s+//')
+                u_name=$(echo "$u_content" | awk '{print $1}')
+                if echo "$u_content" | grep -q "<never>"; then
+                    u_pw="never"
+                    u_bad=$(echo "$u_content" | awk '{print $3}')
+                    u_desc=$(echo "$u_content" | cut -d ' ' -f 4- | xargs)
+                else
+                    u_pw=$(echo "$u_content" | awk '{print $2" "$3}')
+                    u_bad=$(echo "$u_content" | awk '{print $4}')
+                    u_desc=$(echo "$u_content" | cut -d ' ' -f 5- | xargs)
+                fi
+                echo "$u_name;$u_pw;$u_bad;$u_desc" >> "$SUMMARY_FILE"
+            done
+
+            # E. Quick Userlist for Spraying
+            grep "LDAP" "$LDAP_DUMP_DIR/users.txt" | awk '{print $5}' | grep -vE "Username|^$" | sort -u > "$LDAP_DUMP_DIR/users_only_$ip.txt"
+
+            echo -e "${GREEN}[+] Summary and Mapping completed: $SUMMARY_FILE${NC}"
             
         else
             echo -e "${RED}[-] Null Bind failed on $ip.${NC}"
         fi
-        
         rm -f .tmp_ldap
     done < "$OUTDIR/active_ldap.txt"
 fi
-
 # NFS Testing
 if [[ -s "$OUTDIR/active_nfs.txt" ]]; then
     echo -e "${YELLOW}[*] NFS: Listing exports...${NC}"
