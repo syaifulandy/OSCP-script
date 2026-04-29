@@ -545,7 +545,7 @@ echo -e "${PURPLE}====================================================${NC}"
 ALL_PORTS="21,22,135,389,445,1433,2049,3389,5900,5985"
 echo -e "${CYAN}[*] Scanning $ALL_PORTS on all targets...${NC}"
 
-nmap -Pn -n -iL "$TARGET_FILE" -p "$ALL_PORTS" --version-intensity 0 -sV --host-timeout 10s --open -oG "$SCAN_FILE" > /dev/null
+nmap -Pn -n -iL "$TARGET_FILE" -p "$ALL_PORTS" --version-intensity 0 -sV --host-timeout 30s --open -oG "$SCAN_FILE" > /dev/null
 
 echo -e "${GREEN}[+] Scan selesai. Memetakan target aktif per protokol...${NC}"
 
