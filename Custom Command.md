@@ -643,7 +643,7 @@ echo -e "${GREEN}[+] PHASE 3: CLEANING & DEDUPLICATION${NC}"
 echo -e "${PURPLE}====================================================${NC}"
 
 # Deduplikasi dan pembersihan
-sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" "$RAW_OUT" | grep -E "\[\+\]|READ|WRITE|Export" | grep -v "STATUS_ACCESS_DENIED" | sort -u > "$FINAL_OUT"
+sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" "$RAW_OUT" | grep -aE "\[\+\]|READ|WRITE|Export" | grep -av "STATUS_ACCESS_DENIED" | sort -u > "$FINAL_OUT"
 
 if [[ -s "$FINAL_OUT" ]]; then
     echo -e "${GREEN}[!] TEMUAN VALID:${NC}"
