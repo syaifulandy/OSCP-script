@@ -114,8 +114,8 @@ enum_service() {
   # HTTP / HTTPS
   if [[ "$service" == http* ]]; then
     # --- TAMBAHKAN PENGECEKAN WINRM ---
-    # Jika port adalah 5985 atau 5986, lewati FFUF/WPScan
-    if [[ "$port" == "5985" || "$port" == "5986" ]]; then
+    # Jika port adalah 47001, 5985, 5986, lewati FFUF/WPScan
+    if [[ "$port" == "5985" || "$port" == "5986" || "$port" == "47001" ]]; then
       echo -e "${YELLOW}[*] Skipping Web Discovery for WinRM port ($port) on $ip${NC}"
       return
     fi
