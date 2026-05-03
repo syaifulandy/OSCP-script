@@ -750,6 +750,12 @@ echo -e "${BLUE}[i] Ringkasan di: $FINAL_OUT${NC}"
 spray_noauth (default baca file "target" yang berisi list IP)
 spray_noauth target1
 ```
+### Note
+wordlist menggunakan kombinasi:  https://github.com/insidetrust/statistically-likely-usernames/tree/31132bd5da19787152a354e6adad18b2c8432e73
+
+```bash
+awk '!seen[tolower($0)]++ {print tolower($0)}' john.txt service-accounts.txt johns.txt jsmith.txt > merged.txt
+```
 
 
 ## 9. spray_auth
