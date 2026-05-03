@@ -541,7 +541,7 @@ TARGET_FILE=${1:-target}
 DOMAIN_NAME=${2:-auto}
 USERLIST=${3:-/usr/share/seclists/Usernames/kerbrute-userstatisticallynonseclists.txt}
 
-KERBRUTE_TIMEOUT=${KERBRUTE_TIMEOUT:-100}
+KERBRUTE_TIMEOUT=${KERBRUTE_TIMEOUT:-60}
 LDAP_TIMEOUT=${LDAP_TIMEOUT:-8}
 
 # Optional env override:
@@ -553,9 +553,9 @@ OUTDIR="spray_netexec"
 SCAN_FILE="$OUTDIR/nmap_scan.gnmap"
 RAW_OUT="$OUTDIR/raw_spray_noauth.txt"
 FINAL_OUT="$OUTDIR/final_noauth_summary.txt"
-KERBRUTE_STATUS_FILE="$OUTDIR/kerbrute_status.txt"
-MERGED_USERS_STATUS_FILE="$OUTDIR/merged_users_status.txt"
-ASREP_AUDIT_STATUS_FILE="$OUTDIR/asrep_audit_status.txt"
+KERBRUTE_STATUS_FILE="$OUTDIR/info_kerbrute_status.txt"
+MERGED_USERS_STATUS_FILE="$OUTDIR/info_merged_ldap_kerbrute_users_status.txt"
+ASREP_AUDIT_STATUS_FILE="$OUTDIR/info_asrep_audit_status.txt"
 
 if [[ ! -f "$TARGET_FILE" ]]; then
     echo -e "${YELLOW}[!] Error: File '$TARGET_FILE' tidak ditemukan.${NC}"
@@ -1078,7 +1078,7 @@ if [[ -s "$DC_CANDIDATES" ]]; then
 
         SAFE_DOMAIN=$(safe_name "$discovered_domain")
         KERB_OUT="$OUTDIR/kerbrute_${dc_ip}_${SAFE_DOMAIN}.txt"
-        VALID_USERS_OUT="$OUTDIR/valid_users_${dc_ip}_${SAFE_DOMAIN}.txt"
+        VALID_USERS_OUT="$OUTDIR/kerbrute_valid_users_${dc_ip}_${SAFE_DOMAIN}.txt"
 
         echo -e "${YELLOW}[*] Running kerbrute userenum against $dc_ip / $discovered_domain${NC}"
         echo -e "${BLUE}[i] Output: $KERB_OUT${NC}"
@@ -1143,14 +1143,14 @@ if [[ -s "$DC_INFO" ]]; then
         [[ -z "$dc_ip" || -z "$domain" || "$domain" == "UNKNOWN" ]] && continue
 
         SAFE_DOMAIN=$(safe_name "$domain")
-        MERGED_USERS="$OUTDIR/all_users_${dc_ip}_${SAFE_DOMAIN}.txt"
+        MERGED_USERS="$OUTDIR/final_all_users_${dc_ip}_${SAFE_DOMAIN}.txt"
         TMP_MERGE="$OUTDIR/.tmp_all_users_${dc_ip}_${SAFE_DOMAIN}.txt"
 
         : > "$TMP_MERGE"
         : > "$MERGED_USERS"
 
         LDAP_USERS_FILE="$OUTDIR/ldap_nxc_${dc_ip}/users_only_${dc_ip}.txt"
-        KERB_USERS_FILE="$OUTDIR/valid_users_${dc_ip}_${SAFE_DOMAIN}.txt"
+        KERB_USERS_FILE="$OUTDIR/kerbrute_valid_users_${dc_ip}_${SAFE_DOMAIN}.txt"
 
         LDAP_COUNT=0
         KERB_COUNT=0
@@ -1204,7 +1204,7 @@ else
 
             SAFE_DOMAIN=$(safe_name "$domain")
 
-            USERS_FILE="$OUTDIR/all_users_${dc_ip}_${SAFE_DOMAIN}.txt"
+            USERS_FILE="$OUTDIR/final_all_users_${dc_ip}_${SAFE_DOMAIN}.txt"
             HASH_FILE="$OUTDIR/asrep_hashes_${dc_ip}_${SAFE_DOMAIN}.txt"
             CRACKED_FILE="$OUTDIR/asrep_cracked_${dc_ip}_${SAFE_DOMAIN}.txt"
 
@@ -1304,11 +1304,11 @@ if [[ -s "$ASREP_AUDIT_STATUS_FILE" ]]; then
     } >> "$FINAL_OUT"
 fi
 
-if compgen -G "$OUTDIR/all_users_*.txt" > /dev/null; then
+if compgen -G "$OUTDIR/final_all_users_*.txt" > /dev/null; then
     {
         echo ""
         echo "==== MERGED USER FILES ===="
-        for uf in "$OUTDIR"/all_users_*.txt; do
+        for uf in "$OUTDIR"/final_all_users_*.txt; do
             [[ -f "$uf" ]] || continue
             echo "[FILE] $uf"
             echo "count=$(wc -l < "$uf")"
@@ -1349,14 +1349,14 @@ echo -e "${BLUE}[i] Kerbrute status di: $KERBRUTE_STATUS_FILE${NC}"
 echo -e "${BLUE}[i] Merged users status di: $MERGED_USERS_STATUS_FILE${NC}"
 echo -e "${BLUE}[i] ASREP audit status di: $ASREP_AUDIT_STATUS_FILE${NC}"
 
-if compgen -G "$OUTDIR/valid_users_*.txt" > /dev/null; then
+if compgen -G "$OUTDIR/kerbrute_valid_users_*.txt" > /dev/null; then
     echo -e "${BLUE}[i] Kerbrute valid users files:${NC}"
-    ls -1 "$OUTDIR"/valid_users_*.txt
+    ls -1 "$OUTDIR"/kerbrute_valid_users_*.txt
 fi
 
-if compgen -G "$OUTDIR/all_users_*.txt" > /dev/null; then
+if compgen -G "$OUTDIR/final_all_users_*.txt" > /dev/null; then
     echo -e "${BLUE}[i] Merged user files:${NC}"
-    ls -1 "$OUTDIR"/all_users_*.txt
+    ls -1 "$OUTDIR"/final_all_users_*.txt
 fi
 
 if compgen -G "$OUTDIR/asrep_exposed_users_*.txt" > /dev/null; then
@@ -1365,7 +1365,6 @@ if compgen -G "$OUTDIR/asrep_exposed_users_*.txt" > /dev/null; then
 fi
 
 echo -e "\n${GREEN}[+] Done.${NC}"
-
 ```
 
 ### Usage
