@@ -1233,8 +1233,7 @@ else
             if [[ "$HASH_COUNT" -gt 0 ]]; then
                 echo -e "${RED}[!] Found $HASH_COUNT ASREP hash(es). Cracking...${NC}"
 
-                john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt \
-                     --format=krb5asrep \
+                john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules \
                      "$HASH_FILE" > /dev/null 2>&1
 
                 john --show --format=krb5asrep "$HASH_FILE" > "$CRACKED_FILE"
