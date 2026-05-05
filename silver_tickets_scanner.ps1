@@ -22,7 +22,7 @@
     
     NOTE: Does NOT auto-exploit (OSCP compliant)
 .NOTES
-    Requires: mimikatz_trunk.zip in same folder (auto-extracted)
+    Requires: mimikatz_trunk.zip and Powerview in same folder (auto-extracted)
 .EXAMPLE
     powershell -NoProfile -ExecutionPolicy Bypass .\silver_ticket_scanner.ps1
 #>
