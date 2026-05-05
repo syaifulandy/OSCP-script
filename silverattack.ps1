@@ -24,7 +24,7 @@
 .NOTES
     Requires: mimikatz_trunk.zip and Powerview in same folder (auto-extracted)
 .EXAMPLE
-    powershell -NoProfile -ExecutionPolicy Bypass .\silver_ticket_scanner.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass .\silverattack.ps1
 #>
 
 param(
