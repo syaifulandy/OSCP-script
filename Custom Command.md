@@ -1746,7 +1746,7 @@ for ip in "${!PROTO_MAP[@]}"; do
                                 echo -e "${PURPLE}[EXEC][Attempt $attempt_sp] $SP_CMD${NC}"
                                 
                                 # Eksekusi command dari variabel
-                                timeout 40s bash -c "$SP_CMD" | tee .tmp_sp
+                                timeout 60s bash -c "$SP_CMD" | tee .tmp_sp
 
                                 # Jika SUKSES (Ada list share)
                                 if grep -qE "Enumerated shares|SMB Shares:" .tmp_sp; then
