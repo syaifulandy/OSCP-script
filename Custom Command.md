@@ -2044,7 +2044,7 @@ if [[ "$MODE" == "AUTO" ]]; then
     echo ""
 
     echo "$raw" \
-    | sed -E "s/.*$DOMAIN\\\\([^:]+):([^ ]+).*/\1:\2/" \
+    | sed -E 's/.*\\\\([^:]+):([^ ]+).*/\1:\2/' \
     | awk '!seen[$0]++' > "$CREDS_FILE"
 
     echo "[+] Parsed creds:"
