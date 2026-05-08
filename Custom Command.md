@@ -1749,8 +1749,12 @@ for ip in "${!PROTO_MAP[@]}"; do
                                 timeout 60s bash -c "$SP_CMD" | tee .tmp_sp
 
                                 # Jika SUKSES (Ada list share)
-                                if grep -qE "Enumerated shares|SMB Shares:" .tmp_sp; then
-                                    echo -e "${GREEN}[+] spider_plus success!${NC}"
+
+                                if grep -qi "Saved share-file metadata to" .tmp_sp; then
+                                    # Ekstrak path file JSON dari output untuk verifikasi (opsional tapi sangat berguna)
+                                    JSON_PATH=$(grep -oiE '"[^" ]+\.json"' .tmp_sp | tr -d '"')
+                                    
+                                    echo -e "${GREEN}[+] spider_plus success! Metadata saved to: ${JSON_PATH}${NC}"
                                     break
                                 
                                 # Jika GAGAL (Koneksi, Timeout, Broken Pipe, atau No Shares)
