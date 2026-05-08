@@ -2036,8 +2036,8 @@ if [[ "$MODE" == "AUTO" ]]; then
     fi
 
     echo "[*] STEP 1: Parsing creds (LDAP + SMB)"
-    
-    raw=$(grep -E "^(LDAP|SMB)" "$AUTH_FILE" | grep '\[\+\]')
+
+    raw=$(grep -F '[+]' "$AUTH_FILE")
     
     echo "[OUTPUT RAW]"
     echo "$raw"
