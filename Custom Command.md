@@ -604,7 +604,8 @@ fqdn_to_basedn() {
 }
 
 safe_name() {
-    echo "$1" | tr '/: ' '___'
+    # Mengganti semua karakter selain A-Z, a-z, 0-9, titik (.), strip (-), dan underscore (_) menjadi (_)
+    echo "$1" | sed 's/[^A-Za-z0-9._-]/_/g'
 }
 
 clean_nxc_file() {
@@ -660,22 +661,41 @@ find_kerbrute() {
 get_domain_for_dc() {
     local ip="$1"
     local domain=""
+    local fqdn=""
+    local hostname=""
     local base_dn=""
 
+    # 1. Quick Return jika Domain sudah ditentukan manual
     if [[ -n "$DOMAIN_NAME" && "$DOMAIN_NAME" != "auto" && "$DOMAIN_NAME" != "." ]]; then
         echo "$DOMAIN_NAME"
         return 0
     fi
 
-    if command -v ldapsearch >/dev/null 2>&1; then
+    # 2. PRIORITAS 1: Ambil via NetExec (NXC SMB) - Paling akurat dapat Hostname & Domain sekaligus
+    if command -v nxc >/dev/null 2>&1; then
+        local cmd_nxc_smb="nxc smb $ip -u '' -p '' --no-progress"
+        echo -e "${MAGENTA}[CMD] $cmd_nxc_smb${NC}" >&2
+        
+        local nxc_output
+        nxc_output=$(timeout 10s nxc smb "$ip" -u '' -p '' --no-progress 2>/dev/null)
+        
+        # Ekstrak domain & hostname dari banner SMB
+        domain=$(echo "$nxc_output" | grep -aoiE 'domain:[[:space:]]*[A-Za-z0-9._-]+' | head -n1 | cut -d':' -f2 | xargs)
+        hostname=$(echo "$nxc_output" | grep -aoiE 'name:[[:space:]]*[A-Za-z0-9._-]+' | head -n1 | cut -d':' -f2 | xargs)
+        
+        if [[ -n "$hostname" && -n "$domain" ]]; then
+            fqdn="${hostname}.${domain}"
+        fi
+    fi
+
+    # 3. PRIORITAS 2 (Fallback): Jika NXC gagal/kosong, baru coba pakai ldapsearch
+    if [[ -z "$domain" ]] && command -v ldapsearch >/dev/null 2>&1; then
         local cmd="ldapsearch -x -LLL -H ldap://$ip -s base defaultNamingContext"
         echo -e "${MAGENTA}[CMD] $cmd${NC}" >&2
         base_dn=$(timeout "${LDAP_TIMEOUT}s" ldapsearch -x -LLL -H "ldap://$ip" -s base defaultNamingContext 2>/dev/null | \
                   awk -F': ' '/^defaultNamingContext:/{print $2; exit}')
 
         if [[ -z "$base_dn" ]]; then
-            local cmd_alt="ldapsearch -x -LLL -H ldap://$ip -s base namingContexts"
-            echo -e "${MAGENTA}[CMD] $cmd_alt${NC}" >&2
             base_dn=$(timeout "${LDAP_TIMEOUT}s" ldapsearch -x -LLL -H "ldap://$ip" -s base namingContexts 2>/dev/null | \
                       awk -F': ' '/^namingContexts: DC=/{print $2; exit}')
         fi
@@ -685,30 +705,26 @@ get_domain_for_dc() {
         fi
     fi
 
-    if [[ -z "$domain" ]] && command -v nxc >/dev/null 2>&1; then
-        local cmd_nxc_ldap="nxc ldap $ip -u '' -p '' --no-progress"
-        echo -e "${MAGENTA}[CMD] $cmd_nxc_ldap${NC}" >&2
-        domain=$(timeout 10s nxc ldap "$ip" -u '' -p '' --no-progress 2>/dev/null | \
-                 grep -aoiE 'domain:[[:space:]]*[A-Za-z0-9._-]+' | \
-                 head -n1 | awk -F':' '{print $2}' | xargs)
-
-        if [[ -z "$domain" ]]; then
-            local cmd_nxc_smb="nxc smb $ip -u '' -p '' --no-progress"
-            echo -e "${MAGENTA}[CMD] $cmd_nxc_smb${NC}" >&2
-            domain=$(timeout 10s nxc smb "$ip" -u '' -p '' --no-progress 2>/dev/null | \
-                     grep -aoiE 'domain:[[:space:]]*[A-Za-z0-9._-]+' | \
-                     head -n1 | awk -F':' '{print $2}' | xargs)
-        fi
-
-        if [[ -z "$domain" ]]; then
-            echo -e "${MAGENTA}[CMD] $cmd_nxc_ldap (Fallback Domain parse)${NC}" >&2
-            domain=$(timeout 10s nxc ldap "$ip" -u '' -p '' --no-progress 2>/dev/null | \
-                     grep -aoE '\[\+\][[:space:]]+[A-Za-z0-9._-]+\\:' | \
-                     head -n1 | sed -E 's/^\[\+\][[:space:]]+//; s/\\:$//' | xargs)
+    # 4. Fallback Terakhir: Jika domain ketemu tapi hostname/FQDN tetap kosong
+    if [[ -n "$domain" && -z "$fqdn" ]]; then
+        # Coba query DNS cepat untuk mencari hostname asli
+        local resolved_host
+        resolved_host=$(nslookup "$ip" "$ip" 2>/dev/null | awk -F'name = ' '/name =/{print $2}' | cut -d'.' -f1 | xargs)
+        
+        if [[ -n "$resolved_host" ]]; then
+            fqdn="${resolved_host}.${domain}"
+        else
+            # Gunakan dummy DC01 tanpa tanda strip (-) agar lebih natural
+            fqdn="DC01.${domain}"
         fi
     fi
 
-    echo "$domain"
+    # Kembalikan hasil dengan format: domain;fqdn
+    if [[ -n "$domain" ]]; then
+        echo "${domain};${fqdn}"
+    else
+        echo ""
+    fi
 }
 
 get_basedn_for_dc() {
@@ -1180,17 +1196,23 @@ if [[ -s "$DC_CANDIDATES" ]]; then
 
         echo -e "\n${CYAN}>>> Checking DC candidate: $dc_ip${NC}"
 
-        discovered_domain=$(get_domain_for_dc "$dc_ip")
+        # 1. Panggil fungsi yang mengembalikan format "domain;fqdn"
+        discovered_raw=$(get_domain_for_dc "$dc_ip")
 
-        if [[ -z "$discovered_domain" ]]; then
+        if [[ -z "$discovered_raw" ]]; then
             echo -e "${YELLOW}[!] Could not auto-discover domain for $dc_ip. Skipping kerbrute.${NC}"
-            echo "$dc_ip;UNKNOWN" >> "$DC_INFO"
+            echo "$dc_ip;UNKNOWN;UNKNOWN" >> "$DC_INFO"
             echo "KERBRUTE_STATUS;$dc_ip;UNKNOWN;SKIPPED_NO_DOMAIN;timeout=${KERBRUTE_TIMEOUT}s;valid_users=0;output=N/A;valid_users_file=N/A" >> "$KERBRUTE_STATUS_FILE"
             continue
         fi
 
-        echo -e "${GREEN}[+] Domain discovered for $dc_ip: $discovered_domain${NC}"
-        echo "$dc_ip;$discovered_domain" >> "$DC_INFO"
+        # 2. Pecah hasil menjadi variabel terpisah
+        discovered_domain=$(echo "$discovered_raw" | cut -d';' -f1)
+        discovered_fqdn=$(echo "$discovered_raw" | cut -d';' -f2)
+
+        # 3. Tampilkan status dan tulis dengan format 3 kolom ke file mapping
+        echo -e "${GREEN}[+] Domain discovered for $dc_ip: $discovered_domain (FQDN: $discovered_fqdn)${NC}"
+        echo "$dc_ip;$discovered_domain;$discovered_fqdn" >> "$DC_INFO"
 
         # --- JALUR KONDISIONAL: CEK USER DARI LDAP & RPC ---
         LDAP_USERS_FILE="$OUTDIR/ldap_nxc_${dc_ip}/users_only_${dc_ip}.txt"
