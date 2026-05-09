@@ -515,8 +515,6 @@ sudo chmod +x /usr/local/bin/spray_noauth
 ```bash
 #!/bin/bash
 
-#!/bin/bash
-
 # ====================================================
 # NoAuth / Guest / Anonymous Exposure Scanner
 # Upgrade:
@@ -546,7 +544,7 @@ DOMAIN_NAME=${2:-auto}
 USERLIST=${3:-/usr/share/seclists/Usernames/kerbrute-userstatisticallynonseclists.txt}
 
 KERBRUTE_TIMEOUT=${KERBRUTE_TIMEOUT:-60}
-LDAP_TIMEOUT=${LDAP_TIMEOUT:-8}
+LDAP_TIMEOUT=${LDAP_TIMEOUT:-60}
 
 # Optional env override:
 # KERBRUTE_BIN=/usr/local/bin/kerbrute ./script.sh target
@@ -838,18 +836,9 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
         --shares \
         --no-progress 2>&1 | tee -a "$RAW_OUT"
 
-    # Cari domain riil dari hasil mapping DC jika domain di-set ke "auto"
-    ACTUAL_DOMAIN="$DOMAIN_NAME"
-    if [[ "$DOMAIN_NAME" == "auto" && -s "$OUTDIR/dc_domain_mapping.txt" ]]; then
-        # Ambil domain pertama yang berhasil ditemukan dari DC
-        ACTUAL_DOMAIN=$(head -n 1 "$OUTDIR/dc_domain_mapping.txt" | cut -d';' -f2)
-    fi
-    
-    # Jika masih gagal mendeteksi (kosong), gunakan default "Workgroup" atau lewati saja
-    [[ -z "$ACTUAL_DOMAIN" || "$ACTUAL_DOMAIN" == "UNKNOWN" ]] && ACTUAL_DOMAIN="WORKGROUP"
 
-    echo -e "${YELLOW}[*] SMB: Running Guest Domain Auth check. Domain: $ACTUAL_DOMAIN${NC}"
-    SMB_CMD_3="nxc smb $OUTDIR/active_smb.txt -u 'guest' -p '' -d $ACTUAL_DOMAIN --shares --no-progress"
+    echo -e "${YELLOW}[*] SMB: Running Guest Domain Auth check"
+    SMB_CMD_3="nxc smb $OUTDIR/active_smb.txt -u 'guest' -p '' --shares --no-progress"
     echo -e "${MAGENTA}[CMD] $SMB_CMD_3${NC}"
     timeout 40s nxc smb "$OUTDIR/active_smb.txt" \
         -u 'guest' -p '' \
@@ -1389,8 +1378,7 @@ else
                 -dc-ip "$dc_ip" \
                 -no-pass \
                 -usersfile "$USERS_FILE" \
-                -format hashcat \
-                -outputfile "$HASH_FILE" >/dev/null 2>&1
+                -format hashcat 2>&1 | tee /dev/tty | grep -F '$krb5asrep$' > "$HASH_FILE"
 
             RC=$?
 
