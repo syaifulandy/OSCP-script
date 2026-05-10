@@ -455,6 +455,12 @@ echo "$CMD1"
 echo "$CMD2"
 echo "--------------------------------"
 
+echo "[+] Run on kali ligolo after agent joined:"
+echo "--------------------------------"
+echo "session"
+echo "start"
+echo "--------------------------------"
+
 # =========================
 # START PROXY
 # =========================
