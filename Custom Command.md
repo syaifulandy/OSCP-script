@@ -840,7 +840,7 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
     echo -e "${MAGENTA}[CMD] $SMB_CMD_1${NC}"
     timeout 40s nxc smb "$OUTDIR/active_smb.txt" \
         -u '' -p '' \
-        --shares \
+        --shares --users \
         --no-progress 2>&1 | tee -a "$RAW_OUT"
 
     echo -e "${YELLOW}[*] SMB: Running Guest Local Auth check...${NC}"
@@ -849,7 +849,7 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
     timeout 40s nxc smb "$OUTDIR/active_smb.txt" \
         -u 'guest' -p '' \
         --local-auth \
-        --shares \
+        --shares --users \
         --no-progress 2>&1 | tee -a "$RAW_OUT"
 
 
@@ -859,7 +859,7 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
     timeout 40s nxc smb "$OUTDIR/active_smb.txt" \
         -u 'guest' -p '' \
         -d "$ACTUAL_DOMAIN" \
-        --shares \
+        --shares --users \
         --no-progress 2>&1 | tee -a "$RAW_OUT"
 fi
 
