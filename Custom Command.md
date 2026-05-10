@@ -836,7 +836,7 @@ echo -e "${PURPLE}====================================================${NC}"
 
 if [[ -s "$OUTDIR/active_smb.txt" ]]; then
     echo -e "${YELLOW}[*] SMB: Running Null Session check...${NC}"
-    SMB_CMD_1="nxc smb $OUTDIR/active_smb.txt -u '' -p '' --shares --no-progress"
+    SMB_CMD_1="nxc smb $OUTDIR/active_smb.txt -u '' -p '' --shares --users --no-progress"
     echo -e "${MAGENTA}[CMD] $SMB_CMD_1${NC}"
     timeout 40s nxc smb "$OUTDIR/active_smb.txt" \
         -u '' -p '' \
@@ -844,7 +844,7 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
         --no-progress 2>&1 | tee -a "$RAW_OUT"
 
     echo -e "${YELLOW}[*] SMB: Running Guest Local Auth check...${NC}"
-    SMB_CMD_2="nxc smb $OUTDIR/active_smb.txt -u 'guest' -p '' --local-auth --shares --no-progress"
+    SMB_CMD_2="nxc smb $OUTDIR/active_smb.txt -u 'guest' -p '' --local-auth --shares --users --no-progress"
     echo -e "${MAGENTA}[CMD] $SMB_CMD_2${NC}"
     timeout 40s nxc smb "$OUTDIR/active_smb.txt" \
         -u 'guest' -p '' \
@@ -854,7 +854,7 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
 
 
     echo -e "${YELLOW}[*] SMB: Running Guest Domain Auth check"
-    SMB_CMD_3="nxc smb $OUTDIR/active_smb.txt -u 'guest' -p '' --shares --no-progress"
+    SMB_CMD_3="nxc smb $OUTDIR/active_smb.txt -u 'guest' -p '' --shares --users --no-progress"
     echo -e "${MAGENTA}[CMD] $SMB_CMD_3${NC}"
     timeout 40s nxc smb "$OUTDIR/active_smb.txt" \
         -u 'guest' -p '' \
