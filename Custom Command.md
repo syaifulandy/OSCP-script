@@ -841,32 +841,75 @@ echo -e "${PURPLE}====================================================${NC}"
 # ---------------- SMB Testing ----------------
 
 if [[ -s "$OUTDIR/active_smb.txt" ]]; then
-    echo -e "${YELLOW}[*] SMB: Running Null Session check...${NC}"
-    SMB_CMD_1="nxc smb $OUTDIR/active_smb.txt -u '' -p '' --shares --users --no-progress"
-    echo -e "${MAGENTA}[CMD] $SMB_CMD_1${NC}"
-    timeout 40s nxc smb "$OUTDIR/active_smb.txt" \
-        -u '' -p '' \
-        --shares --users \
-        --no-progress 2>&1 | tee -a "$RAW_OUT"
 
-    echo -e "${YELLOW}[*] SMB: Running Guest Local Auth check...${NC}"
-    SMB_CMD_2="nxc smb $OUTDIR/active_smb.txt -u 'guest' -p '' --local-auth --shares --users --no-progress"
-    echo -e "${MAGENTA}[CMD] $SMB_CMD_2${NC}"
-    timeout 40s nxc smb "$OUTDIR/active_smb.txt" \
-        -u 'guest' -p '' \
-        --local-auth \
-        --shares --users \
-        --no-progress 2>&1 | tee -a "$RAW_OUT"
+    SMB_TESTS=(
+        "Null Session|-u '' -p ''"
+        "Guest Local Auth|-u 'guest' -p '' --local-auth"
+        "Guest Domain Auth|-u 'guest' -p ''"
+    )
 
+    for entry in "${SMB_TESTS[@]}"; do
 
-    echo -e "${YELLOW}[*] SMB: Running Guest Domain Auth check"
-    SMB_CMD_3="nxc smb $OUTDIR/active_smb.txt -u 'guest' -p '' --shares --users --no-progress"
-    echo -e "${MAGENTA}[CMD] $SMB_CMD_3${NC}"
-    timeout 40s nxc smb "$OUTDIR/active_smb.txt" \
-        -u 'guest' -p '' \
-        -d "$ACTUAL_DOMAIN" \
-        --shares --users \
-        --no-progress 2>&1 | tee -a "$RAW_OUT"
+        TITLE="${entry%%|*}"
+        ARGS="${entry#*|}"
+
+        echo -e "${YELLOW}[*] SMB: Running $TITLE check...${NC}"
+
+        for attempt in {1..3}; do
+
+            CMD="nxc smb $OUTDIR/active_smb.txt $ARGS --shares --users --no-progress"
+
+            echo -e "${MAGENTA}[CMD][Attempt $attempt] $CMD${NC}"
+
+            timeout 40s bash -c "$CMD" > .tmp_res 2>&1
+
+            exit_code=$?
+
+            cat .tmp_res | tee -a "$RAW_OUT"
+
+            # ====================================
+            # TIMEOUT / CONNECTION ISSUE
+            # ====================================
+            if [[ $exit_code -eq 124 ]] || \
+               grep -qiE "Broken Pipe|NETBIOS connection.*timed out|connection.*timed out" .tmp_res; then
+
+                echo -e "${YELLOW}[!] Timeout/Connection issue (attempt $attempt/3)${NC}"
+
+                sleep 2
+                continue
+            fi
+
+            # ====================================
+            # EMPTY RESPONSE
+            # ====================================
+            if [[ ! -s .tmp_res ]]; then
+
+                echo -e "${YELLOW}[!] Empty response (attempt $attempt/3)${NC}"
+
+                sleep 2
+                continue
+            fi
+
+            # ====================================
+            # INVALID SMB OUTPUT
+            # ====================================
+            if ! grep -q "SMB" .tmp_res; then
+
+                echo -e "${YELLOW}[!] Invalid SMB response (attempt $attempt/3)${NC}"
+
+                sleep 2
+                continue
+            fi
+
+            # ====================================
+            # SUCCESS
+            # ====================================
+            break
+
+        done
+
+    done
+
 fi
 
 # ---------------- SMB Vulnerability Scanning ----------------
@@ -886,9 +929,12 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
     clean_nxc_file .tmp_vulns
 
     # Parsing hasil temuan jika ada modul yang mendeteksi kerentanan (biasanya ditandai dengan VULNERABLE atau SUCCESS)
-    if grep -aqi "VULNERABLE" .tmp_vulns; then
+     VULN_LINES=$(grep -ai "VULNERABLE" .tmp_vulns | grep -avi "NOT")
+
+    if [ -n "$VULN_LINES" ]; then
         echo -e "${RED}[!!!] ALERT: Critical SMB Vulnerability Detected! Check details below:${NC}"
-        grep -ai "VULNERABLE" .tmp_vulns | while read -r line; do
+
+        echo "$VULN_LINES" | while read -r line; do
             echo -e "${RED}$line${NC}"
             echo "[!] VULNERABILITY FOUND: $line" >> "$RAW_OUT"
         done
