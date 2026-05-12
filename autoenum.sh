@@ -101,8 +101,11 @@ has_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+
 safe_target_list() {
-  grep -vE '^\s*$|^\s*#' "$TARGETS" | tr -d '\r'
+  grep -vE '^\s*$|^\s*#' "$TARGETS" \
+    | tr -d '\r' \
+    | awk '!seen[$0]++'
 }
 
 sanitize_filename() {
@@ -253,114 +256,420 @@ build_web_targets() {
   sort -u "$output_file" -o "$output_file"
 }
 
+
 # ==========================================
-# SEARCHSPLOIT SUMMARY
+# NORMALIZE PRODUCT BANNER
+# ==========================================
+normalize_product_banner() {
+  echo "$1" \
+    | sed -E 's/^(syn-ack|udp-response|reset|conn-refused|no-response|echo-reply|arp-response|localhost-response)( ttl [0-9]+)?[[:space:]]*//I' \
+    | sed -E 's/\(\([^)]*\)\)//g' \
+    | sed -E 's/\([^)]*\)//g' \
+    | sed -E 's/[[:space:]]+/ /g' \
+    | sed -E 's/^[[:space:]]+|[[:space:]]+$//g'
+}
+
+# ==========================================
+# EXTRACT VERSION FROM PRODUCT / QUERY
+# ==========================================
+extract_version() {
+  echo "$1" \
+    | grep -oE '[0-9]+(\.[0-9]+){1,4}([a-zA-Z0-9._-]*)?' \
+    | head -n 1
+}
+
+# ==========================================
+# EXTRACT VENDOR / APP TOKEN
+# ==========================================
+extract_vendor() {
+  local cleaned="$1"
+
+  echo "$cleaned" \
+    | awk '{print $1}' \
+    | sed 's/[?]//g' \
+    | tr '[:upper:]' '[:lower:]'
+}
+
+# ==========================================
+# NORMALIZE SEARCHSPLOIT OUTPUT LINE
+# ==========================================
+normalize_searchsploit_line() {
+  echo "$1" \
+    | sed -E 's/\x1B\[[0-9;]*[mK]//g' \
+    | sed -E 's/[[:space:]]+/ /g' \
+    | sed -E 's/[[:space:]]+\|[[:space:]]+/ | /g' \
+    | sed -E 's/^[[:space:]]+|[[:space:]]+$//g'
+}
+
+# ==========================================
+# REMOTE EXPLOIT FILTER
+# ==========================================
+is_remote_exploit_line() {
+  local line="$1"
+
+  echo "$line" \
+    | grep -iE "Remote|RCE|Code Execution|Execution|Overflow|Path Traversal|Command Execution|Command Injection" \
+    | grep -viE "Denial of Service|DoS|\.txt" >/dev/null
+}
+
+# ==========================================
+# LOCAL PRIVESC FILTER
+# Avoid false positive like "Local File Inclusion"
+# ==========================================
+is_local_privesc_line() {
+  local line="$1"
+  local title
+  local path
+
+  title=$(echo "$line" | awk -F'|' '{print $1}')
+  path=$(echo "$line" | awk -F'|' '{print $2}')
+
+  # Path-based local exploit
+  echo "$path" | grep -qiE '/local/' && return 0
+
+  # Title-based privilege escalation only
+  echo "$title" | grep -qiE "Privilege Escalation|Priv Esc|PrivEsc|LPE|Local Privilege" && return 0
+
+  return 1
+}
+
+# ==========================================
+# BUILD HIGH CONFIDENCE SEARCHSPLOIT QUERIES
+# Mostly version-based
+# ==========================================
+build_searchsploit_queries_high() {
+  local product="$1"
+
+  local cleaned
+  local version
+  local first_word
+
+  cleaned=$(normalize_product_banner "$product")
+  version=$(extract_version "$cleaned")
+  first_word=$(echo "$cleaned" | awk '{print $1}' | sed 's/[?]//g')
+
+  [[ -z "$cleaned" ]] && return
+
+  # Full cleaned product
+  echo "$cleaned"
+
+  # Vendor + exact version
+  if [[ -n "$first_word" && -n "$version" ]]; then
+    echo "$first_word $version"
+  fi
+
+  # Version-only fallback, useful for Apache 2.4.49
+  [[ -n "$version" ]] && echo "$version"
+
+  # Apache variants
+  if echo "$cleaned" | grep -qiE '^Apache'; then
+    [[ -n "$version" ]] && echo "Apache $version"
+    [[ -n "$version" ]] && echo "Apache HTTP Server $version"
+    [[ -n "$version" ]] && echo "Apache httpd $version"
+  fi
+
+  # Common services
+  if echo "$cleaned" | grep -qiE '^OpenSSH'; then
+    [[ -n "$version" ]] && echo "OpenSSH $version"
+  fi
+
+  if echo "$cleaned" | grep -qiE 'Samba|smbd'; then
+    [[ -n "$version" ]] && echo "Samba $version"
+    [[ -n "$version" ]] && echo "smbd $version"
+  fi
+
+  if echo "$cleaned" | grep -qiE '^vsftpd'; then
+    [[ -n "$version" ]] && echo "vsftpd $version"
+  fi
+
+  if echo "$cleaned" | grep -qiE '^ProFTPD'; then
+    [[ -n "$version" ]] && echo "ProFTPD $version"
+  fi
+
+  if echo "$cleaned" | grep -qiE 'Microsoft IIS|IIS'; then
+    [[ -n "$version" ]] && echo "Microsoft IIS $version"
+    [[ -n "$version" ]] && echo "IIS $version"
+  fi
+
+  if echo "$cleaned" | grep -qiE 'Tomcat'; then
+    [[ -n "$version" ]] && echo "Tomcat $version"
+    [[ -n "$version" ]] && echo "Apache Tomcat $version"
+  fi
+}
+
+# ==========================================
+# BUILD GENERIC / BROAD SEARCHSPLOIT QUERIES
+# Product/app-name based, less strict
+# ==========================================
+build_searchsploit_queries_generic() {
+  local product="$1"
+  local service="$2"
+
+  local cleaned
+  local first_word
+  local service_clean
+
+  cleaned=$(normalize_product_banner "$product")
+  first_word=$(echo "$cleaned" | awk '{print $1}' | sed 's/[?]//g')
+  service_clean=$(echo "$service" | sed 's/[?]//g')
+
+  [[ -n "$first_word" ]] && echo "$first_word"
+
+  if echo "$cleaned" | grep -qiE '^Apache'; then
+    echo "Apache"
+    echo "Apache HTTP Server"
+    echo "Apache httpd"
+  fi
+
+  if echo "$cleaned" | grep -qiE '^OpenSSH'; then
+    echo "OpenSSH"
+  fi
+
+  if echo "$cleaned" | grep -qiE 'Samba|smbd'; then
+    echo "Samba"
+    echo "smbd"
+  fi
+
+  if echo "$cleaned" | grep -qiE '^vsftpd'; then
+    echo "vsftpd"
+  fi
+
+  if echo "$cleaned" | grep -qiE '^ProFTPD'; then
+    echo "ProFTPD"
+  fi
+
+  if echo "$cleaned" | grep -qiE 'Tomcat'; then
+    echo "Tomcat"
+    echo "Apache Tomcat"
+  fi
+
+  # Service fallback only if not generic/noisy
+  case "$service_clean" in
+    ""|"unknown"|"tcpwrapped"|"msrpc"|"netbios-ssn"|"microsoft-ds")
+      ;;
+    "http"|"https"|"ssl/http"|"http-proxy"|"http-alt")
+      ;;
+    "domain"|"dns"|"snmp")
+      ;;
+    *)
+      echo "$service_clean"
+      ;;
+  esac
+}
+
+# ==========================================
+# HIGH CONFIDENCE CHECK
+# Strict:
+# If product has version, exploit title must contain vendor/app + exact version.
+# ==========================================
+is_high_confidence_exploit() {
+  local title="$1"
+  local product="$2"
+  local query="$3"
+
+  local cleaned
+  local title_lc
+  local version
+  local vendor
+
+  cleaned=$(normalize_product_banner "$product")
+  title_lc=$(echo "$title" | tr '[:upper:]' '[:lower:]')
+  version=$(extract_version "$cleaned $query")
+  vendor=$(extract_vendor "$cleaned")
+
+  [[ -z "$version" || -z "$vendor" ]] && return 1
+
+  # Exact version must exist in title
+  echo "$title_lc" | grep -Fqi "$version" || return 1
+
+  # Vendor/app must exist in title
+  echo "$title_lc" | grep -Fqi "$vendor" && return 0
+
+  # Apache alias handling
+  if [[ "$vendor" == "apache" ]]; then
+    echo "$title_lc" | grep -Eqi 'apache|http server|httpd' && return 0
+  fi
+
+  return 1
+}
+
+# ==========================================
+# GENERATE EXPLOIT SUMMARY
+# Remote High Confidence vs Generic/Broad vs Local PrivEsc
 # ==========================================
 generate_exploit_summary() {
   local ip_dir="$1"
   local parsed_file="$2"
+
   local remote_out="$ip_dir/exploits_remote.txt"
+  local generic_out="$ip_dir/exploits_remote_generic.txt"
   local local_out="$ip_dir/exploits_privesc.txt"
 
-  local tmp_rem_spec
-  local tmp_rem_broad
+  local tmp_high
+  local tmp_generic
   local tmp_loc
+  local tmp_queries_seen
 
-  tmp_rem_spec=$(mktemp)
-  tmp_rem_broad=$(mktemp)
+  tmp_high=$(mktemp)
+  tmp_generic=$(mktemp)
   tmp_loc=$(mktemp)
+  tmp_queries_seen=$(mktemp)
 
   [[ ! -s "$parsed_file" ]] && {
-    rm -f "$tmp_rem_spec" "$tmp_rem_broad" "$tmp_loc"
+    rm -f "$tmp_high" "$tmp_generic" "$tmp_loc" "$tmp_queries_seen"
     return
   }
 
-  info "Sorting Remote vs Local exploits for $parsed_file..."
+  info "Sorting Remote High Confidence vs Generic vs Local PrivEsc for $parsed_file..."
 
   while IFS=';' read -r port service product; do
-    # Clean leftover reason noise if parser ever misses it
-    product=$(echo "$product" | sed -E 's/^(syn-ack|udp-response|reset|conn-refused|no-response|echo-reply|arp-response|localhost-response)( ttl [0-9]+)?[[:space:]]*//I')
-    product=$(echo "$product" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+    product=$(normalize_product_banner "$product")
 
     [[ "$product" == "microsoft-ds?" ]] && product="Microsoft Windows SMB"
 
-    # Build query:
-    # - Prefer product/version.
-    # - If product empty, use service only if service is specific enough.
-    local query=""
-    local service_clean=""
-
-    if [[ -n "$product" && "$product" != "unknown" && "$product" != "tcpwrapped" ]]; then
-      query="$product"
-    else
-      service_clean=$(echo "$service" | sed 's/[?]//g')
-      case "$service_clean" in
+    # Skip useless rows
+    if [[ -z "$product" ]]; then
+      case "$service" in
         ""|"unknown"|"tcpwrapped"|"msrpc"|"netbios-ssn"|"microsoft-ds")
-          query=""
-          ;;
-        *)
-          query="$service_clean"
+          continue
           ;;
       esac
     fi
 
-    [[ -z "$query" ]] && continue
+    # -------------------------
+    # HIGH CONFIDENCE QUERIES
+    # -------------------------
+    local high_queries
+    high_queries=$(mktemp)
 
-    # Skip obvious reason/noise
-    if echo "$query" | grep -qiE '^(syn-ack|udp-response|reset|conn-refused|no-response|ttl|ttl [0-9]+)$'; then
-      continue
-    fi
+    build_searchsploit_queries_high "$product" \
+      | sed 's/[?]//g' \
+      | sed -E 's/[[:space:]]+/ /g' \
+      | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' \
+      | awk 'length($0) >= 2' \
+      | sort -u > "$high_queries"
 
-    local software_only
-    software_only=$(echo "$query" | awk '{print $1}' | sed 's/[?]//g')
+    while IFS= read -r ss_query; do
+      [[ -z "$ss_query" ]] && continue
 
-    if [[ "$software_only" =~ ^(syn-ack|udp-response|ttl|unknown|tcpwrapped)$ ]]; then
-      software_only=""
-    fi
+      if grep -Fxqi "HIGH::$ss_query" "$tmp_queries_seen"; then
+        continue
+      fi
+      echo "HIGH::$ss_query" >> "$tmp_queries_seen"
 
-    print_cmd "searchsploit -t \"$query\" | grep remote/RCE/execution/overflow"
-    searchsploit -t "$query" 2>/dev/null \
-      | grep -iE "Remote|RCE|Code Execution|Execution|Overflow" \
-      | grep -viE "Denial of Service|DoS|\.txt" \
-      >> "$tmp_rem_spec"
+      print_cmd "COLUMNS=300 searchsploit -t \"$ss_query\" | remote filter"
 
-    if [[ -n "$software_only" && "$software_only" != "Microsoft" && "$software_only" != "$query" ]]; then
-      print_cmd "searchsploit -t \"$software_only\" | grep remote/RCE/execution/overflow"
-      searchsploit -t "$software_only" 2>/dev/null \
-        | grep -iE "Remote|RCE|Code Execution|Execution|Overflow" \
-        | grep -viE "Denial of Service|DoS|\.txt" \
-        >> "$tmp_rem_broad"
-    fi
+      while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
 
-    print_cmd "searchsploit -t \"$query\" | grep local/privilege/escalation"
-    searchsploit -t "$query" 2>/dev/null \
-      | grep -iE "Local|Privilege|Escalation|LPE" \
-      | grep -viE "Denial of Service|DoS|\.txt" \
-      >> "$tmp_loc"
+        local norm_line
+        local title
 
-    if [[ -n "$software_only" && "$software_only" != "Microsoft" ]]; then
-      print_cmd "searchsploit -t \"$software_only\" | grep local/privilege/escalation"
-      searchsploit -t "$software_only" 2>/dev/null \
-        | grep -iE "Local|Privilege|Escalation|LPE" \
-        | grep -viE "Denial of Service|DoS|\.txt" \
-        >> "$tmp_loc"
-    fi
+        norm_line=$(normalize_searchsploit_line "$line")
+        title=$(echo "$norm_line" | awk -F'|' '{print $1}' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
+
+        if is_remote_exploit_line "$norm_line"; then
+          if is_high_confidence_exploit "$title" "$product" "$ss_query"; then
+            echo "$norm_line" >> "$tmp_high"
+          else
+            echo "$norm_line" >> "$tmp_generic"
+          fi
+        fi
+
+        if is_local_privesc_line "$norm_line"; then
+          echo "$norm_line" >> "$tmp_loc"
+        fi
+      done < <(
+        COLUMNS=300 searchsploit -t "$ss_query" 2>/dev/null \
+          | grep -viE "Shellcodes:|No Results|Exploit Title|----"
+      )
+
+    done < "$high_queries"
+
+    rm -f "$high_queries"
+
+    # -------------------------
+    # GENERIC / PRODUCT QUERIES
+    # -------------------------
+    local generic_queries
+    generic_queries=$(mktemp)
+
+    build_searchsploit_queries_generic "$product" "$service" \
+      | sed 's/[?]//g' \
+      | sed -E 's/[[:space:]]+/ /g' \
+      | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' \
+      | awk 'length($0) >= 3' \
+      | sort -u > "$generic_queries"
+
+    while IFS= read -r ss_query; do
+      [[ -z "$ss_query" ]] && continue
+
+      if grep -Fxqi "GENERIC::$ss_query" "$tmp_queries_seen"; then
+        continue
+      fi
+      echo "GENERIC::$ss_query" >> "$tmp_queries_seen"
+
+      print_cmd "COLUMNS=300 searchsploit -t \"$ss_query\" | generic remote filter"
+
+      while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+
+        local norm_line
+        norm_line=$(normalize_searchsploit_line "$line")
+
+        if is_remote_exploit_line "$norm_line"; then
+          echo "$norm_line" >> "$tmp_generic"
+        fi
+
+        if is_local_privesc_line "$norm_line"; then
+          echo "$norm_line" >> "$tmp_loc"
+        fi
+      done < <(
+        COLUMNS=300 searchsploit -t "$ss_query" 2>/dev/null \
+          | grep -viE "Shellcodes:|No Results|Exploit Title|----"
+      )
+
+    done < "$generic_queries"
+
+    rm -f "$generic_queries"
+
   done < "$parsed_file"
 
+  # -------------------------
+  # WRITE HIGH CONFIDENCE FILE
+  # -------------------------
   {
     echo "======================================================"
     echo "   SPECIFIC REMOTE EXPLOITS (High Confidence)"
     echo "======================================================"
-    sort -u "$tmp_rem_spec"
 
-    echo
-    echo
-    echo "======================================================"
-    echo "   BROAD REMOTE SEARCH (App Based)"
-    echo "======================================================"
-    comm -23 <(sort -u "$tmp_rem_broad") <(sort -u "$tmp_rem_spec")
+    if [ -s "$tmp_high" ]; then
+      sort -u "$tmp_high"
+    else
+      echo "No obvious high-confidence Remote/RCE exploit found from service banners."
+    fi
   } > "$remote_out"
 
+  # -------------------------
+  # WRITE GENERIC FILE
+  # -------------------------
+  {
+    echo "======================================================"
+    echo "   GENERIC REMOTE SEARCH (Product/App Based)"
+    echo "======================================================"
+    echo "Review manually. These are lower confidence results."
+    echo "======================================================"
+
+    if [ -s "$tmp_generic" ]; then
+      comm -23 <(sort -u "$tmp_generic") <(sort -u "$tmp_high")
+    else
+      echo "No generic remote results generated."
+    fi
+  } > "$generic_out"
+
+  # -------------------------
+  # WRITE LOCAL PRIVESC FILE
+  # -------------------------
   {
     echo "======================================================"
     echo "   LOCAL PRIVILEGE ESCALATION CANDIDATES"
@@ -373,12 +682,14 @@ generate_exploit_summary() {
     fi
   } > "$local_out"
 
-  rm -f "$tmp_rem_spec" "$tmp_rem_broad" "$tmp_loc"
+  rm -f "$tmp_high" "$tmp_generic" "$tmp_loc" "$tmp_queries_seen"
 
   ok "Exploit summaries written:"
   echo "    - $remote_out"
+  echo "    - $generic_out"
   echo "    - $local_out"
 }
+
 
 # =========================
 # ENUM SERVICE
