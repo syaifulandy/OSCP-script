@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Setup
+# sudo nano /usr/local/bin/spray_authhash
+# sudo chmod +x /usr/local/bin/spray_authhash
 # --- COLORS ---
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
