@@ -37,8 +37,8 @@ NC="\e[0m"
 # =========================
 QUICK_HOST_TIMEOUT="3m"
 UDP_HOST_TIMEOUT="3m"
-NUCLEI_TIMEOUT="5m"
-RUSTSCAN_TIMEOUT="12m"
+NUCLEI_TIMEOUT="10m"
+RUSTSCAN_TIMEOUT="5m"
 NMAP_STATS_EVERY="15s"
 
 FFUF_SCRIPT="/opt/ffuf/ffufscan.sh"
