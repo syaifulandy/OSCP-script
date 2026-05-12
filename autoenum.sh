@@ -188,10 +188,16 @@ for ip in $(cat "$TARGETS"); do
   target_nuclei=$(grep "http" "$IP_DIR/parsed_quick.txt" | head -n 1 | awk -F';' '{print "http://'$ip':"$1}')
   [[ -z "$target_nuclei" ]] && target_nuclei="$ip"
   echo "[*] Running Nuclei..."
-  nuclei -s critical,high,medium -u "$target_nuclei" -o "$IP_DIR/nuclei.txt" -nh -ni > /dev/null 2>&1
+  timeout 3m nuclei -s critical,high,medium -u "$target_nuclei" -o "$IP_DIR/nuclei.txt" -nh -ni > /dev/null 2>&1
 
-  echo "[*] Running Nmap Full Port (-p-)..."
-  nmap -p- -sV --host-timeout 360 -Pn -T4 -v "$ip" -oN "$IP_DIR/full.txt" > /dev/null
+  echo "[*] Running RustScan Full Port..."
+  timeout 3m rustscan -a "$ip" \
+    -r 1-65535 \
+    --tries 3 \
+    --ulimit 5000 \
+    -- -Pn -sCV -oN "$IP_DIR/full.txt" \
+    > /dev/null 2>&1
+    
   parse_nmap_open "$IP_DIR/full.txt" > "$IP_DIR/parsed_full.txt"
 
   cat "$IP_DIR/parsed_full.txt" "$IP_DIR/parsed_quick.txt" | sort | uniq -u > "$IP_DIR/parsed_new.txt"
