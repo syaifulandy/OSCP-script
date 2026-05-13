@@ -1069,6 +1069,13 @@ generate_global_summary() {
   local global_privesc="$SCAN_DIR/global_exploits_privesc.txt"
   local global_ports="$SCAN_DIR/global_open_ports.txt"
 
+  local global_nuclei="$SCAN_DIR/global_nuclei.txt"
+  local global_nuclei_high="$SCAN_DIR/global_nuclei_high.txt"
+  local global_ffuf="$SCAN_DIR/global_ffuf.txt"
+  local global_web="$SCAN_DIR/global_web_targets.txt"
+  local global_wp="$SCAN_DIR/global_wordpress.txt"
+
+
   print_cmd "find \"$SCAN_DIR\" -name exploits_remote.txt -exec cat {} \\; | sort -u > \"$global_remote\""
   find "$SCAN_DIR" -mindepth 2 -maxdepth 2 -name "exploits_remote.txt" -print0 \
     | xargs -0 cat 2>/dev/null \
@@ -1098,10 +1105,46 @@ generate_global_summary() {
 
   sort -u "$global_ports" -o "$global_ports"
 
+  print_cmd "Aggregating nuclei results..."
+
+  find "$SCAN_DIR" -type f \( -name "nuclei.txt" -o -name "nuclei_new.txt" \) -print0 \
+    | xargs -0 cat 2>/dev/null \
+    | sort -u > "$global_nuclei"
+
+  grep -Ei "critical|high" "$global_nuclei" 2>/dev/null | sort -u > "$global_nuclei_high"
+
+
+  print_cmd "Aggregating ffuf results..."
+
+  find "$SCAN_DIR" -name "ffuf.log" -print0 \
+    | xargs -0 grep -hE "Status:|http" 2>/dev/null \
+    | sort -u > "$global_ffuf"
+
+
+  print_cmd "Collecting web targets..."
+
+  find "$SCAN_DIR" -type f \( -name "nuclei_targets.txt" -o -name "nuclei_targets_new.txt" \) -print0 \
+    | xargs -0 cat 2>/dev/null \
+    | sort -u > "$global_web"
+
+
+  print_cmd "Detecting WordPress globally..."
+
+  grep -ril "wordpress" "$SCAN_DIR" 2>/dev/null \
+    | grep "index.html" \
+    | sed 's|.*/scans/\([^/]*\)/web_\([0-9]*\).*|\1:\2|' \
+    | sort -u > "$global_wp"
+
   ok "Global files:"
   echo "    - $global_remote"
   echo "    - $global_privesc"
   echo "    - $global_ports"
+  echo "    - $global_nuclei"
+  echo "    - $global_nuclei_high"
+  echo "    - $global_ffuf"
+  echo "    - $global_web"
+  echo "    - $global_wp"
+
 }
 
 # =========================
