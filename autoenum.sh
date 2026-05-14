@@ -891,15 +891,6 @@ enum_service() {
         local safe_zone
         safe_zone=$(sanitize_filename "$zone")
 
-        print_cmd "nmap -Pn -p \"$port\" --script dns-zone-transfer --script-args dns-zone-transfer.domain=\"$zone\" \"$ip\" -oN \"$dns_dir/axfr_${safe_zone}.txt\""
-
-        nmap -Pn -p "$port" \
-          --script dns-zone-transfer \
-          --script-args "dns-zone-transfer.domain=$zone" \
-          "$ip" \
-          -oN "$dns_dir/axfr_${safe_zone}.txt" \
-          2>&1 | tee "$dns_dir/axfr_${safe_zone}_live.log"
-
         if has_cmd dig; then
           print_cmd "dig @$ip $zone axfr"
           dig @"$ip" "$zone" axfr 2>&1 | tee "$dns_dir/dig_axfr_${safe_zone}.txt"
