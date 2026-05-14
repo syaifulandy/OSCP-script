@@ -76,7 +76,7 @@ echo -e "${KUNING}[!] Tekan Ctrl+C jika transfer selesai atau ingin membatalkan.
 
 # Menjalankan netcat listener (Gunakan sudo jika port < 1024)
 if [ "$PORT" -lt 1024 ]; then
-  sudo nc -nlvp "$PORT" > "$FILE_NAME"
+  sudo nc -nlvp "$PORT" | pv -abet > "$FILE_NAME"
 else
-  nc -nlvp "$PORT" > "$FILE_NAME"
+  nc -nlvp "$PORT" | pv -abet > "$FILE_NAME"
 fi
