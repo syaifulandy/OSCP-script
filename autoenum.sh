@@ -927,7 +927,7 @@ private
 manager
 EOF
 
-    print_cmd "$SUDO_BIN nmap -Pn -sU --open -p \"$port\" \"$ip\" -oN \"$snmp_dir/snmp_open.txt\""
+    print_cmd "$SUDO_BIN nmap -Pn -sU -sCV --open -p \"$port\" \"$ip\" -oN \"$snmp_dir/snmp_open.txt\""
 
     $SUDO_BIN nmap -Pn -sU --open -p "$port" "$ip" \
       -oN "$snmp_dir/snmp_open.txt" \
@@ -954,14 +954,6 @@ EOF
       echo "public" > "$snmp_dir/communities_found.txt"
     fi
 
-    print_cmd "$SUDO_BIN nmap -Pn -sU -p \"$port\" --script snmp-info,snmp-interfaces,snmp-processes,snmp-sysdescr \"$ip\" -oN \"$snmp_dir/snmp_nmap_scripts.txt\""
-
-    $SUDO_BIN nmap -Pn -sU -p "$port" \
-      --script snmp-info,snmp-interfaces,snmp-processes,snmp-sysdescr \
-      "$ip" \
-      -oN "$snmp_dir/snmp_nmap_scripts.txt" \
-      2>&1 | tee "$snmp_dir/snmp_nmap_scripts_live.log"
-
     if has_cmd snmpwalk; then
       while read -r community; do
         [[ -z "$community" ]] && continue
@@ -972,36 +964,8 @@ EOF
         info "SNMP community candidate: $community"
 
         print_cmd "snmpwalk -c \"$community\" -v1 -t 10 \"$ip\""
-        snmpwalk -c "$community" -v1 -t 10 "$ip" \
+        snmpwalk -c "$community" -v1 -t 5 "$ip" \
           2>&1 | tee "$snmp_dir/snmpwalk_${safe_community}_full.txt"
-
-        print_cmd "snmpwalk -c \"$community\" -v1 -t 10 \"$ip\" 1.3.6.1.2.1.25.1.6.0"
-        snmpwalk -c "$community" -v1 -t 10 "$ip" 1.3.6.1.2.1.25.1.6.0 \
-          2>&1 | tee "$snmp_dir/snmp_${safe_community}_system_processes.txt"
-
-        print_cmd "snmpwalk -c \"$community\" -v1 -t 10 \"$ip\" 1.3.6.1.2.1.25.4.2.1.2"
-        snmpwalk -c "$community" -v1 -t 10 "$ip" 1.3.6.1.2.1.25.4.2.1.2 \
-          2>&1 | tee "$snmp_dir/snmp_${safe_community}_running_programs.txt"
-
-        print_cmd "snmpwalk -c \"$community\" -v1 -t 10 \"$ip\" 1.3.6.1.2.1.25.4.2.1.4"
-        snmpwalk -c "$community" -v1 -t 10 "$ip" 1.3.6.1.2.1.25.4.2.1.4 \
-          2>&1 | tee "$snmp_dir/snmp_${safe_community}_process_paths.txt"
-
-        print_cmd "snmpwalk -c \"$community\" -v1 -t 10 \"$ip\" 1.3.6.1.2.1.25.2.3.1.4"
-        snmpwalk -c "$community" -v1 -t 10 "$ip" 1.3.6.1.2.1.25.2.3.1.4 \
-          2>&1 | tee "$snmp_dir/snmp_${safe_community}_storage_units.txt"
-
-        print_cmd "snmpwalk -c \"$community\" -v1 -t 10 \"$ip\" 1.3.6.1.2.1.25.6.3.1.2"
-        snmpwalk -c "$community" -v1 -t 10 "$ip" 1.3.6.1.2.1.25.6.3.1.2 \
-          2>&1 | tee "$snmp_dir/snmp_${safe_community}_software_names.txt"
-
-        print_cmd "snmpwalk -c \"$community\" -v1 -t 10 \"$ip\" 1.3.6.1.4.1.77.1.2.25"
-        snmpwalk -c "$community" -v1 -t 10 "$ip" 1.3.6.1.4.1.77.1.2.25 \
-          2>&1 | tee "$snmp_dir/snmp_${safe_community}_windows_users.txt"
-
-        print_cmd "snmpwalk -c \"$community\" -v1 -t 10 \"$ip\" 1.3.6.1.2.1.6.13.1.3"
-        snmpwalk -c "$community" -v1 -t 10 "$ip" 1.3.6.1.2.1.6.13.1.3 \
-          2>&1 | tee "$snmp_dir/snmp_${safe_community}_tcp_local_ports.txt"
 
       done < "$snmp_dir/communities_found.txt"
     else
@@ -1196,11 +1160,11 @@ for ip in $(safe_target_list); do
   fi
 
   info "Nmap UDP Fast Scan running in background..."
-  print_cmd "$SUDO_BIN nmap -sU -sV --top-ports 20 --max-retries 1 --host-timeout $UDP_HOST_TIMEOUT --stats-every $NMAP_STATS_EVERY -Pn \"$ip\" -oN \"$IP_DIR/udp_fast.txt\""
+  print_cmd "$SUDO_BIN nmap -sU -sV --top-ports 16 --max-retries 1 --host-timeout $UDP_HOST_TIMEOUT --stats-every $NMAP_STATS_EVERY -Pn \"$ip\" -oN \"$IP_DIR/udp_fast.txt\""
 
   (
     $SUDO_BIN nmap -sU -sV \
-      --top-ports 20 \
+      --top-ports 16 \
       --max-retries 1 \
       --host-timeout "$UDP_HOST_TIMEOUT" \
       --stats-every "$NMAP_STATS_EVERY" \
