@@ -104,7 +104,7 @@ rdp 192.168.50.250 offsec lab
 
 ---
 
-## 3. spray
+## 3. spray [Deprecated]
 
 **Deskripsi:** Shortcut cepat untuk spray user password ke list target (net exec / nxc)
 
@@ -1608,7 +1608,7 @@ awk '!seen[tolower($0)]++ {print tolower($0)}' john.txt service-accounts.txt joh
 ```
 
 
-## 9. spray_auth
+## 9. spray_auth [Deprecated]
 
 **Deskripsi:** Shortcut cepat untuk spray bruteforce user dan password (coba semua protokol nxc: smb, ssh, ldap, ftp, wmi, winrm, rdp, vnc, mssql, nfs)
 
