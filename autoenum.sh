@@ -759,7 +759,7 @@ enum_service() {
         (
           cd "$web_dir" || exit
           print_cmd "$FFUF_SCRIPT path \"$url/FUZZ\""
-          timeout 2m "$FFUF_SCRIPT" path "$url/FUZZ" 2>&1 | tee "$web_dir/ffuf.log"
+          timeout 6m "$FFUF_SCRIPT" path "$url/FUZZ" 2>&1 | tee "$web_dir/ffuf.log"
         )
       else
         warn "FFUF wrapper not found/executable: $FFUF_SCRIPT"
