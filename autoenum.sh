@@ -55,6 +55,12 @@ if [ -z "$TARGETS" ] || [ ! -f "$TARGETS" ]; then
 fi
 
 mkdir -p "$SCAN_DIR"
+echo -e "${GREEN}[+] Running Nuclei in background"
+nohup nuclei -s critical,high,medium \
+  -l "$TARGETS" \
+  -o "$SCAN_DIR/general_nuclei.txt" \
+  -nh -ni \
+  > "$SCAN_DIR/nuclei.log" 2>&1 &
 
 # =========================
 # LOGGING
@@ -753,7 +759,7 @@ enum_service() {
         (
           cd "$web_dir" || exit
           print_cmd "$FFUF_SCRIPT path \"$url/FUZZ\""
-          timeout 5m "$FFUF_SCRIPT" path "$url/FUZZ" 2>&1 | tee "$web_dir/ffuf.log"
+          timeout 2m "$FFUF_SCRIPT" path "$url/FUZZ" 2>&1 | tee "$web_dir/ffuf.log"
         )
       else
         warn "FFUF wrapper not found/executable: $FFUF_SCRIPT"
