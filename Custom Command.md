@@ -855,9 +855,9 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
 
         echo -e "${YELLOW}[*] SMB: Running $TITLE check...${NC}"
 
-        for attempt in {1..3}; do
+        for attempt in {1..2}; do
 
-            CMD="nxc smb $OUTDIR/active_smb.txt $ARGS --shares --users --no-progress"
+            CMD="nxc smb $OUTDIR/active_smb.txt $ARGS --shares --users --rid --no-progress"
 
             echo -e "${MAGENTA}[CMD][Attempt $attempt] $CMD${NC}"
 
@@ -873,7 +873,7 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
             if [[ $exit_code -eq 124 ]] || \
                grep -qiE "Broken Pipe|NETBIOS connection.*timed out|connection.*timed out" .tmp_res; then
 
-                echo -e "${YELLOW}[!] Timeout/Connection issue (attempt $attempt/3)${NC}"
+                echo -e "${YELLOW}[!] Timeout/Connection issue (attempt $attempt/2)${NC}"
 
                 sleep 2
                 continue
@@ -884,7 +884,7 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
             # ====================================
             if [[ ! -s .tmp_res ]]; then
 
-                echo -e "${YELLOW}[!] Empty response (attempt $attempt/3)${NC}"
+                echo -e "${YELLOW}[!] Empty response (attempt $attempt/2)${NC}"
 
                 sleep 2
                 continue
@@ -895,7 +895,7 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
             # ====================================
             if ! grep -q "SMB" .tmp_res; then
 
-                echo -e "${YELLOW}[!] Invalid SMB response (attempt $attempt/3)${NC}"
+                echo -e "${YELLOW}[!] Invalid SMB response (attempt $attempt/2)${NC}"
 
                 sleep 2
                 continue
