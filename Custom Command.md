@@ -507,7 +507,7 @@ sudo ip route add $1 dev $IFACE
 ligolo-route 172.16.6.0/24
 ```
 
-## 8. spray_noauth
+## 8. spray_noauth [DEPRECATED]
 
 **Deskripsi:** Shortcut cepat untuk spray enumerasi awal (net exec / nxc) tanpa user dan password (coba scan port semua protokol yang disupport nxc: smb, ssh, ldap, ftp, wmi, winrm, rdp, vnc, mssql, nfs)
 
@@ -2244,7 +2244,7 @@ spray_auth target user pass
 ```
 
 
-## 10. spray_dcsync.sh
+## 10. spray_dcsync.sh [DEPRECATED]
 
 **Deskripsi:** Auto perform dcsync using secrets. Note: jalankan spray_noauth dan spray_auth terlebih dahulu.
 
