@@ -300,10 +300,18 @@ for ip in "${!PROTO_MAP[@]}"; do
             if [[ "$proto" == "ldap" ]]; then
                 DUMP_PATH="$OUTDIR/ldap_$ip"
                 mkdir -p "$DUMP_PATH"
+
+                echo "[DEBUG] RAW DOMAIN: $DOMAIN"
+                echo "[DEBUG] RAW USER: $user"
+                echo "[DEBUG] FINAL LDAP_USER: $LDAP_USER"
+
                 LDAP_USER="$user"
-                [[ "$DOMAIN" != "." ]] && LDAP_USER="${DOMAIN}\\$user"
+
+                if [[ "$DOMAIN" != "." ]]; then
+                    LDAP_USER=$(printf '%s\\%s' "$DOMAIN" "$user")
+                fi
                 echo -e "${YELLOW}[!] Executing ldapdomaindump...${NC}"
-                echo -e "${GRAY}[CMD] timeout 60s ldapdomaindump \"$ip\" -u \"$LDAP_USER\" -p \"$pass\" -o \"$DUMP_PATH\"${NC}"
+                echo "${GRAY}[CMD] timeout 60s ldapdomaindump \"$ip\" -u \"$LDAP_USER\" -p \"$pass\" -o \"$DUMP_PATH\"${NC}"
                 timeout 60s ldapdomaindump "$ip" -u "$LDAP_USER" -p "$pass" -o "$DUMP_PATH" 
                 # === EXPORT USERS VIA LDAP (HANYA JIKA SMB BELUM BERHASIL) ===
                 if [[ "$DOMAIN" != "." && -z "${USER_EXP_DONE[$DOMAIN]}" ]]; then
