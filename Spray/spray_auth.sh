@@ -311,7 +311,7 @@ for ip in "${!PROTO_MAP[@]}"; do
                     LDAP_USER=$(printf '%s\\%s' "$DOMAIN" "$user")
                 fi
                 echo -e "${YELLOW}[!] Executing ldapdomaindump...${NC}"
-                echo "${GRAY}[CMD] timeout 60s ldapdomaindump \"$ip\" -u \"$LDAP_USER\" -p \"$pass\" -o \"$DUMP_PATH\"${NC}"
+                echo "[CMD] timeout 60s ldapdomaindump \"$ip\" -u \"$LDAP_USER\" -p \"$pass\" -o \"$DUMP_PATH\""
                 timeout 60s ldapdomaindump "$ip" -u "$LDAP_USER" -p "$pass" -o "$DUMP_PATH" 
                 # === EXPORT USERS VIA LDAP (HANYA JIKA SMB BELUM BERHASIL) ===
                 if [[ "$DOMAIN" != "." && -z "${USER_EXP_DONE[$DOMAIN]}" ]]; then
