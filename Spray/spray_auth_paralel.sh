@@ -409,7 +409,7 @@ fi
 # =================================================================
 # EXTRACTION: UNIQUE VALID CREDENTIALS TO Final_valid_creds.txt
 # =================================================================
-FINAL_CREDS_FILE="$OUTDIR/Final_valid_creds.txt"
+FINAL_CREDS_FILE="$OUTDIR/final_valid_creds_$DOMAIN.txt"
 : > "$FINAL_CREDS_FILE"
 
 if [[ -s "$FINAL_OUT" ]]; then
