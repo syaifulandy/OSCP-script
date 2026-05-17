@@ -861,7 +861,7 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
 
             echo -e "${MAGENTA}[CMD][Attempt $attempt] $CMD${NC}"
 
-            timeout 40s bash -c "$CMD" > .tmp_res 2>&1
+            timeout 100s bash -c "$CMD" > .tmp_res 2>&1
 
             exit_code=$?
 
