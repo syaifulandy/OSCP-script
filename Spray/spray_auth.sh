@@ -146,7 +146,7 @@ for ip in "${!PROTO_MAP[@]}"; do
                     echo "$ip;$proto;LOCAL_NO_OUTPUT_NEED_INVESTIGATION" >> "$BROKEN_PIPE_LOG"
                 fi
                 ((attempt_spray++))
-                sleep 3
+                sleep 1
 
             # 3. JIKA TIMEOUT / ERROR JARINGAN DI TEXT -> Coba lagi (Retry)
             elif grep -qiE "Broken Pipe|timed out|connection.*timeout" "$TMP_RES"; then
@@ -155,7 +155,7 @@ for ip in "${!PROTO_MAP[@]}"; do
                     echo "$ip;$proto;LOCAL_AUTH_TIMEOUT" >> "$BROKEN_PIPE_LOG"
                 fi
                 ((attempt_spray++))
-                sleep 3
+                sleep 1
 
             # 4. JIKA NYATA GAGAL AUTENTIKASI (Kredensial Salah) -> Langsung keluar, jangan diulang!
             elif grep -qiE "STATUS_LOGON_FAILURE|STATUS_ACCOUNT|Access denied|\[-\]" "$TMP_RES"; then
@@ -199,7 +199,7 @@ for ip in "${!PROTO_MAP[@]}"; do
                         echo "$ip;$proto;DOMAIN_NO_OUTPUT_NEED_INVESTIGATION" >> "$BROKEN_PIPE_LOG"
                     fi
                     ((attempt_dom++))
-                    sleep 3
+                    sleep 1
 
                 # 3. JIKA TIMEOUT / ERROR JARINGAN DI TEXT -> Coba lagi (Retry)
                 elif grep -qiE "Broken Pipe|timed out|connection.*timeout" "$TMP_RES"; then
@@ -208,7 +208,7 @@ for ip in "${!PROTO_MAP[@]}"; do
                         echo "$ip;$proto;DOMAIN_TIMEOUT_OR_BROKEN_PIPE" >> "$BROKEN_PIPE_LOG"
                     fi
                     ((attempt_dom++))
-                    sleep 3
+                    sleep 1
 
                 # 4. JIKA NYATA GAGAL AUTENTIKASI (Kredensial Salah) -> Langsung keluar
                 elif grep -qiE "STATUS_LOGON_FAILURE|STATUS_ACCOUNT|Access denied|\[-\]" "$TMP_RES"; then
