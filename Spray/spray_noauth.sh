@@ -862,10 +862,12 @@ if [[ -s "$DC_INFO" ]]; then
         LDAP_USERS_FILE="$OUTDIR/ldap_nxc_${dc_ip}/users_only_${dc_ip}.txt"
         RPC_USERS_FILE="$OUTDIR/rpc_users_${dc_ip}.txt"
         KERB_USERS_FILE="$OUTDIR/kerbrute_valid_users_${dc_ip}_${SAFE_DOMAIN}.txt"
+        RID_USERS_FILE="$OUTDIR/user_rid_brute.txt" 
 
         LDAP_COUNT=0
         RPC_COUNT=0
         KERB_COUNT=0
+        RID_COUNT=0
 
         if [[ -s "$LDAP_USERS_FILE" ]]; then
             cat "$LDAP_USERS_FILE" | normalize_user_only_stream >> "$TMP_MERGE"
@@ -881,6 +883,10 @@ if [[ -s "$DC_INFO" ]]; then
             cat "$KERB_USERS_FILE" | normalize_user_only_stream >> "$TMP_MERGE"
             KERB_COUNT=$(wc -l < "$KERB_USERS_FILE" 2>/dev/null || echo 0)
         fi
+        if [[ -s "$RID_USERS_FILE" ]]; then
+            cat "$RID_USERS_FILE" | normalize_user_only_stream >> "$TMP_MERGE"
+            RID_COUNT=$(wc -l < "$RID_USERS_FILE" 2>/dev/null || echo 0)
+        fi
 
         sort -u "$TMP_MERGE" > "$MERGED_USERS"
         rm -f "$TMP_MERGE"
@@ -889,12 +895,12 @@ if [[ -s "$DC_INFO" ]]; then
 
         if [[ "$MERGED_COUNT" -gt 0 ]]; then
             echo -e "${GREEN}[+] Merged users for $dc_ip / $domain: $MERGED_COUNT${NC}"
-            echo -e "${BLUE}[i] LDAP users: $LDAP_COUNT | RPC users: $RPC_COUNT | Kerbrute users: $KERB_COUNT${NC}"
+            echo -e "${BLUE}[i] LDAP: $LDAP_COUNT | RPC: $RPC_COUNT | Kerbrute: $KERB_COUNT | RID: $RID_COUNT${NC}"
             echo -e "${BLUE}[i] Merged file: $MERGED_USERS${NC}"
-            echo "MERGED_USERS;$dc_ip;$domain;ldap_users=$LDAP_COUNT;rpc_users=$RPC_COUNT;kerbrute_users=$KERB_COUNT;merged_users=$MERGED_COUNT;file=$MERGED_USERS" >> "$MERGED_USERS_STATUS_FILE"
+            echo "MERGED_USERS;$dc_ip;$domain;ldap_users=$LDAP_COUNT;rpc_users=$RPC_COUNT;kerbrute_users=$KERB_COUNT;rid_users=$RID_COUNT;merged_users=$MERGED_COUNT;file=$MERGED_USERS" >> "$MERGED_USERS_STATUS_FILE"
         else
             echo -e "${YELLOW}[!] No users to merge for $dc_ip / $domain.${NC}"
-            echo "MERGED_USERS;$dc_ip;$domain;ldap_users=$LDAP_COUNT;rpc_users=$RPC_COUNT;kerbrute_users=$KERB_COUNT;merged_users=0;file=$MERGED_USERS" >> "$MERGED_USERS_STATUS_FILE"
+            echo "MERGED_USERS;$dc_ip;$domain;ldap_users=$LDAP_COUNT;rpc_users=$RPC_COUNT;kerbrute_users=$KERB_COUNT;merged_users=0;rid_users=$RID_COUNT;file=$MERGED_USERS" >> "$MERGED_USERS_STATUS_FILE"
         fi
 
     done < "$DC_INFO"
