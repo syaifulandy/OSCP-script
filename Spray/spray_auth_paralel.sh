@@ -406,6 +406,28 @@ else
     echo -e "${YELLOW}[!] No summary records found.${NC}"
 fi
 
+# =================================================================
+# EXTRACTION: UNIQUE VALID CREDENTIALS TO Final_valid_creds.txt
+# =================================================================
+FINAL_CREDS_FILE="$OUTDIR/Final_valid_creds.txt"
+: > "$FINAL_CREDS_FILE"
+
+if [[ -s "$FINAL_OUT" ]]; then
+    # Mengambil baris yang memiliki pola kredensial valid
+    # Contoh input: [winrm] 10.0.16.179 - [+] Valid Credentials Found -> ATHENA_SVC:1dirtymartini
+    # Hasil output: 10.0.16.179;ATHENA_SVC:1dirtymartini
+    grep -a "Valid Credentials Found" "$FINAL_OUT" | awk -F'-> ' '{print $1, $2}' | awk '{print $2 ";" $NF}' | sort -u > "$FINAL_CREDS_FILE"
+
+    if [[ -s "$FINAL_CREDS_FILE" ]]; then
+        TOTAL_CREDS=$(wc -l < "$FINAL_CREDS_FILE")
+        echo -e "\n${GREEN}[+] Successfully extracted $TOTAL_CREDS unique credentials into:${NC}"
+        echo -e "${YELLOW}---> $FINAL_CREDS_FILE${NC}"
+        echo -e "${GRAY}------------------------------------------------------------${NC}"
+        cat "$FINAL_CREDS_FILE"
+        echo -e "${GRAY}------------------------------------------------------------${NC}"
+    fi
+fi
+
 if [[ -s "$BROKEN_PIPE_LOG" ]]; then
     echo -e "\n${RED}[!] HOSTS WITH CONNECTION TIMEOUTS / BROKEN PIPE:${NC}"
     echo -e "${GRAY}------------------------------------------------------------${NC}"
