@@ -255,7 +255,7 @@ process_target_proto() {
             if [[ "$DOMAIN" != "." ]]; then
                 LDAP_USER=$(printf '%s\\%s' "$DOMAIN" "$user")
             fi
-                        echo "[DEBUG] RAW DOMAIN: $DOMAIN"
+            echo "[DEBUG] RAW DOMAIN: $DOMAIN"
             echo "[DEBUG] RAW USER: $user"
             echo "[DEBUG] FINAL LDAP_USER: $LDAP_USER"
             echo -e "${YELLOW}[!] Executing ldapdomaindump...${NC}"
