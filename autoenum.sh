@@ -759,7 +759,7 @@ enum_service() {
         (
           cd "$web_dir" || exit
           print_cmd "$FFUF_SCRIPT path \"$url/FUZZ\""
-          timeout 6m "$FFUF_SCRIPT" path "$url/FUZZ" 2>&1 | tee "$web_dir/ffuf.log"
+          "$FFUF_SCRIPT" path "$url/FUZZ" 2>&1 | tee "$web_dir/ffuf.log"
         )
       else
         warn "FFUF wrapper not found/executable: $FFUF_SCRIPT"
@@ -784,67 +784,6 @@ enum_service() {
     fi
   fi
 
-  # -------------------------
-  # FTP - no rescan
-  # -------------------------
-  if [[ "$service" == ftp* ]]; then
-    local ftp_dir="$ip_dir/ftp_$port"
-    mkdir -p "$ftp_dir"
-
-    {
-      echo "FTP detected on $ip:$port"
-      echo "Service: $service"
-      echo "Product: $product"
-      echo
-      echo "Note:"
-      echo "- No extra nmap scan executed because quick/full scan already used -sCV."
-      echo "- Manual checks to consider:"
-      echo "  ftp $ip $port"
-      echo "  anonymous / anonymous"
-      echo "  anonymous / anonymous@"
-    } | tee "$ftp_dir/ftp_notes.txt"
-  fi
-
-  # -------------------------
-  # SSH - no rescan
-  # -------------------------
-  if [[ "$service" == ssh* ]]; then
-    local ssh_dir="$ip_dir/ssh_$port"
-    mkdir -p "$ssh_dir"
-
-    {
-      echo "SSH detected on $ip:$port"
-      echo "Service: $service"
-      echo "Product: $product"
-      echo
-      echo "Note:"
-      echo "- No extra nmap scan executed because quick/full scan already used -sCV."
-      echo "- Manual checks to consider:"
-      echo "  ssh user@$ip -p $port"
-      echo "  check banner/version against exploits_remote.txt"
-      echo "  check credential reuse if creds are found later"
-    } | tee "$ssh_dir/ssh_notes.txt"
-  fi
-
-  # -------------------------
-  # RDP - no rescan
-  # -------------------------
-  if [[ "$service" == ms-wbt-server* || "$service" == rdp* || "$port" == "3389" ]]; then
-    local rdp_dir="$ip_dir/rdp_$port"
-    mkdir -p "$rdp_dir"
-
-    {
-      echo "RDP detected on $ip:$port"
-      echo "Service: $service"
-      echo "Product: $product"
-      echo
-      echo "Note:"
-      echo "- No extra nmap scan executed because quick/full scan already used -sCV."
-      echo "- Manual checks to consider:"
-      echo "  xfreerdp /v:$ip:$port /u:user /p:password /cert:ignore"
-      echo "  check credential reuse if creds are found later"
-    } | tee "$rdp_dir/rdp_notes.txt"
-  fi
 
   # -------------------------
   # DNS - blackbox
@@ -897,6 +836,15 @@ enum_service() {
         local safe_zone
         safe_zone=$(sanitize_filename "$zone")
 
+        print_cmd "nmap -Pn -p \"$port\" --script dns-zone-transfer --script-args dns-zone-transfer.domain=\"$zone\" \"$ip\" -oN \"$dns_dir/axfr_${safe_zone}.txt\""
+
+        nmap -Pn -p "$port" \
+          --script dns-zone-transfer \
+          --script-args "dns-zone-transfer.domain=$zone" \
+          "$ip" \
+          -oN "$dns_dir/axfr_${safe_zone}.txt" \
+          2>&1 | tee "$dns_dir/axfr_${safe_zone}_live.log"
+
         if has_cmd dig; then
           print_cmd "dig @$ip $zone axfr"
           dig @"$ip" "$zone" axfr 2>&1 | tee "$dns_dir/dig_axfr_${safe_zone}.txt"
@@ -923,12 +871,6 @@ public
 private
 manager
 EOF
-
-    print_cmd "$SUDO_BIN nmap -Pn -sU -sCV --open -p \"$port\" \"$ip\" -oN \"$snmp_dir/snmp_open.txt\""
-
-    $SUDO_BIN nmap -Pn -sU --open -p "$port" "$ip" \
-      -oN "$snmp_dir/snmp_open.txt" \
-      2>&1 | tee "$snmp_dir/snmp_open_live.log"
 
     if has_cmd onesixtyone; then
       print_cmd "onesixtyone -c \"$snmp_dir/communities_default.txt\" -i \"$snmp_dir/ip.txt\""
@@ -961,7 +903,7 @@ EOF
         info "SNMP community candidate: $community"
 
         print_cmd "snmpwalk -c \"$community\" -v1 -t 10 \"$ip\""
-        snmpwalk -c "$community" -v1 -t 5 "$ip" \
+        snmpwalk -c "$community" -v1 -t 10 "$ip" \
           2>&1 | tee "$snmp_dir/snmpwalk_${safe_community}_full.txt"
 
       done < "$snmp_dir/communities_found.txt"
@@ -1075,23 +1017,11 @@ generate_global_summary() {
   grep -Ei "critical|high" "$global_nuclei" 2>/dev/null | sort -u > "$global_nuclei_high"
 
 
-  print_cmd "Merging clean FFUF CSV results (structured)..."
+  print_cmd "Aggregating ffuf results..."
 
-  # Ambil header dari file pertama aja
-  first_csv=$(find "$SCAN_DIR" -type f -name "*_output_bersih.csv" | head -n 1)
-
-  if [ -n "$first_csv" ]; then
-    head -n 1 "$first_csv" > "$global_ffuf"
-
-    # append semua tanpa header
-    find "$SCAN_DIR" -type f -name "*_output_bersih.csv" -print0 \
-      | xargs -0 awk 'NR>1' 2>/dev/null \
-      | sort -u >> "$global_ffuf"
-  else
-    warn "No FFUF CSV files found."
-  fi
-
-
+  find "$SCAN_DIR" -name "ffuf.log" -print0 \
+    | xargs -0 grep -hE "Status:|http" 2>/dev/null \
+    | sort -u > "$global_ffuf"
 
 
   print_cmd "Collecting web targets..."
@@ -1157,11 +1087,11 @@ for ip in $(safe_target_list); do
   fi
 
   info "Nmap UDP Fast Scan running in background..."
-  print_cmd "$SUDO_BIN nmap -sU -sV --top-ports 16 --max-retries 1 --host-timeout $UDP_HOST_TIMEOUT --stats-every $NMAP_STATS_EVERY -Pn \"$ip\" -oN \"$IP_DIR/udp_fast.txt\""
+  print_cmd "$SUDO_BIN nmap -sU -sV --top-ports 20 --max-retries 1 --host-timeout $UDP_HOST_TIMEOUT --stats-every $NMAP_STATS_EVERY -Pn \"$ip\" -oN \"$IP_DIR/udp_fast.txt\""
 
   (
     $SUDO_BIN nmap -sU -sV \
-      --top-ports 16 \
+      --top-ports 20 \
       --max-retries 1 \
       --host-timeout "$UDP_HOST_TIMEOUT" \
       --stats-every "$NMAP_STATS_EVERY" \
