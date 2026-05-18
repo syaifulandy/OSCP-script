@@ -1019,10 +1019,11 @@ generate_global_summary() {
 
   print_cmd "Aggregating ffuf results..."
 
-  find "$SCAN_DIR" -name "ffuf.log" -print0 \
-    | xargs -0 grep -hE "Status:|http" 2>/dev/null \
-    | sort -u > "$global_ffuf"
+  echo "target_found,status,size,redirect_to,final_destination_info" > "$global_ffuf"
 
+  find "$SCAN_DIR" -name "*_FUZZ_output_bersih.csv" -type f | while read -r file; do
+      tail -n +2 "$file"
+  done | sort -u >> "$global_ffuf"
 
   print_cmd "Collecting web targets..."
 
