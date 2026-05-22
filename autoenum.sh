@@ -808,51 +808,8 @@ enum_service() {
     fi
 
     : > "$dns_dir/zone_candidates.txt"
-
-    if [ -s "$dns_dir/reverse_lookup.txt" ]; then
-      sed 's/\.$//' "$dns_dir/reverse_lookup.txt" \
-        | awk -F'.' 'NF>=2 {
-            print $(NF-1)"."$NF
-            if (NF>=3) print $(NF-2)"."$(NF-1)"."$NF
-          }' >> "$dns_dir/zone_candidates.txt"
-    fi
-
-    grep -Eoi '([a-zA-Z0-9_-]+\.)+[a-zA-Z]{2,}' "$dns_dir/dns_basic.txt" 2>/dev/null \
-      | sed 's/\.$//' \
-      | awk -F'.' 'NF>=2 {
-          print $(NF-1)"."$NF
-          if (NF>=3) print $(NF-2)"."$(NF-1)"."$NF
-        }' >> "$dns_dir/zone_candidates.txt"
-
-    sort -u "$dns_dir/zone_candidates.txt" -o "$dns_dir/zone_candidates.txt"
-
-    if [ -s "$dns_dir/zone_candidates.txt" ]; then
-      info "Trying AXFR against discovered zone candidates..."
-      sed 's/^/    - /' "$dns_dir/zone_candidates.txt"
-
-      while read -r zone; do
-        [[ -z "$zone" ]] && continue
-
-        local safe_zone
-        safe_zone=$(sanitize_filename "$zone")
-
-        print_cmd "nmap -Pn -p \"$port\" --script dns-zone-transfer --script-args dns-zone-transfer.domain=\"$zone\" \"$ip\" -oN \"$dns_dir/axfr_${safe_zone}.txt\""
-
-        nmap -Pn -p "$port" \
-          --script dns-zone-transfer \
-          --script-args "dns-zone-transfer.domain=$zone" \
-          "$ip" \
-          -oN "$dns_dir/axfr_${safe_zone}.txt" \
-          2>&1 | tee "$dns_dir/axfr_${safe_zone}_live.log"
-
-        if has_cmd dig; then
-          print_cmd "dig @$ip $zone axfr"
-          dig @"$ip" "$zone" axfr 2>&1 | tee "$dns_dir/dig_axfr_${safe_zone}.txt"
-        fi
-      done < "$dns_dir/zone_candidates.txt"
     else
       warn "No DNS zone candidates discovered. Skipping AXFR."
-    fi
   fi
 
   # -------------------------
@@ -892,7 +849,6 @@ EOF
       warn "No SNMP community found. Trying public as fallback."
       echo "public" > "$snmp_dir/communities_found.txt"
     fi
-
     if has_cmd snmpwalk; then
       while read -r community; do
         [[ -z "$community" ]] && continue
@@ -902,9 +858,26 @@ EOF
 
         info "SNMP community candidate: $community"
 
-        print_cmd "snmpwalk -c \"$community\" -v1 -t 10 \"$ip\""
-        snmpwalk -c "$community" -v1 -t 10 "$ip" \
-          2>&1 | tee "$snmp_dir/snmpwalk_${safe_community}_full.txt"
+        # 1. TEST UTAMA: Coba Full Walk super cepat pakai snmpbulkwalk v2c
+        print_cmd "snmpbulkwalk -c \"$community\" -v2c -Cr30 -t 10  \"$ip\" .1"
+        snmpbulkwalk -c "$community" -v2c -Cr30 -t 10 "$ip" .1 2>/dev/null \
+          | tee "$snmp_dir/snmpwalk_${safe_community}_full_v2c.txt"
+
+        # 2. FALLBACK: Jika v2c gagal/kosong, coba full walk pakai snmpwalk v1 biasa
+        if [ ! -s "$snmp_dir/snmpwalk_${safe_community}_full_v2c.txt" ]; then
+          # Hapus file v2c yang kosong agar tidak membingungkan
+          rm -f "$snmp_dir/snmpwalk_${safe_community}_full_v2c.txt"
+          
+          print_cmd "snmpwalk -c \"$community\" -v1 -t 10 \"$ip\" (Fallback v1)"
+          snmpwalk -c "$community" -v1 -t 10 "$ip" 2>/dev/null \
+            | tee "$snmp_dir/snmpwalk_${safe_community}_full_v1.txt"
+        fi
+
+        # 3. TARGETED JACKPOT SCAN: Tembak langsung OID angka Net-SNMP Extend
+        # Tetap jalankan ini secara terpisah untuk mengantisipasi jika Full Walk di atas terkena timeout/tidak lengkap
+        print_cmd "snmpwalk -c \"$community\" -v2c -t 10 \"$ip\" .1.3.6.1.4.1.8072.1.3"
+        snmpwalk -c "$community" -v2c -t 10 "$ip" .1.3.6.1.4.1.8072.1.3 2>/dev/null \
+          | tee "$snmp_dir/snmpwalk_${safe_community}_extensions.txt"
 
       done < "$snmp_dir/communities_found.txt"
     else
