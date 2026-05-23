@@ -59,7 +59,7 @@ echo -e "${GREEN}[+] Running Nuclei in background"
 nohup nuclei -s critical,high,medium \
   -l "$TARGETS" \
   -o "$SCAN_DIR/general_nuclei.txt" \
-  -nh -ni \
+  -nh -ni -mhe 10 -ept http \
   > "$SCAN_DIR/nuclei.log" 2>&1 &
 
 # =========================
@@ -1103,14 +1103,14 @@ for ip in $(safe_target_list); do
     info "Nuclei targets:"
     sed 's/^/    - /' "$IP_DIR/nuclei_targets.txt"
 
-    print_cmd "timeout $NUCLEI_TIMEOUT nuclei -s critical,high,medium -l \"$IP_DIR/nuclei_targets.txt\" -o \"$IP_DIR/nuclei.txt\" -nh -ni"
+    print_cmd "timeout $NUCLEI_TIMEOUT nuclei -s critical,high,medium -l \"$IP_DIR/nuclei_targets.txt\" -o \"$IP_DIR/nuclei.txt\" -nh -ni -mhe 10 -as"
 
     (
       timeout "$NUCLEI_TIMEOUT" nuclei \
         -s critical,high,medium \
         -l "$IP_DIR/nuclei_targets.txt" \
         -o "$IP_DIR/nuclei.txt" \
-        -nh -ni \
+        -nh -ni -mhe 10 -as\
         2>&1 | tee "$IP_DIR/nuclei_live.log"
     ) &
 
