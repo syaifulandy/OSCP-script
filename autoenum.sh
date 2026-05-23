@@ -59,7 +59,7 @@ echo -e "${GREEN}[+] Running Nuclei in background"
 nohup nuclei -s critical,high,medium \
   -l "$TARGETS" \
   -o "$SCAN_DIR/general_nuclei.txt" \
-  -nh -ni -mhe 10 -ept http \
+  -nh -ni -mhe 25 -ept http \
   > "$SCAN_DIR/nuclei.log" 2>&1 &
 
 # =========================
