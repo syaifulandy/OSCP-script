@@ -1086,90 +1086,99 @@ done
 # ==========================================
 # TAHAP 2: DEEP SCAN & NUCLEI
 # ==========================================
-section "TAHAP 2: DEEP SCAN & NUCLEI PARALLEL (ALL TARGETS)"
+section "TAHAP 2: NUCLEI PARALLEL (ALL TARGETS)"
 
 for ip in $(safe_target_list); do
-  subsection "DEEP SCANNING: $ip"
+  (
+    subsection "NUCLEI: $ip"
 
-  IP_DIR="$SCAN_DIR/$ip"
-  mkdir -p "$IP_DIR"
+    IP_DIR="$SCAN_DIR/$ip"
+    mkdir -p "$IP_DIR"
 
-  build_web_targets "$ip" "$IP_DIR/parsed_quick.txt" "$IP_DIR/nuclei_targets.txt"
+    build_web_targets "$ip" "$IP_DIR/parsed_quick.txt" "$IP_DIR/nuclei_targets.txt"
 
-  NUCLEI_PID=""
+    if [ -s "$IP_DIR/nuclei_targets.txt" ]; then
+      info "Running Nuclei..."
+      sed 's/^/    - /' "$IP_DIR/nuclei_targets.txt"
 
-  if [ -s "$IP_DIR/nuclei_targets.txt" ]; then
-    info "Running Nuclei in background while RustScan runs..."
-    info "Nuclei targets:"
-    sed 's/^/    - /' "$IP_DIR/nuclei_targets.txt"
-
-    print_cmd "timeout $NUCLEI_TIMEOUT nuclei -s critical,high,medium -l \"$IP_DIR/nuclei_targets.txt\" -o \"$IP_DIR/nuclei.txt\" -nh -ni -mhe 10 -as"
-
-    (
-      timeout "$NUCLEI_TIMEOUT" nuclei \
+      nuclei \
         -s critical,high,medium \
         -l "$IP_DIR/nuclei_targets.txt" \
         -o "$IP_DIR/nuclei.txt" \
-        -nh -ni -mhe 10 -as\
+        -nh -ni -mhe 25 -as -retries 5 \
         2>&1 | tee "$IP_DIR/nuclei_live.log"
-    ) &
-
-    NUCLEI_PID=$!
-  else
-    warn "No quick web targets found for nuclei on $ip."
-  fi
-
-  info "Running RustScan Full Port..."
-  run_rustscan_full "$ip"
-
-  if [[ -n "$NUCLEI_PID" ]]; then
-    info "Waiting for Nuclei PID $NUCLEI_PID to finish..."
-    wait "$NUCLEI_PID"
-    ok "Nuclei finished for $ip"
-  fi
-
-  parse_nmap_open "$IP_DIR/full.txt" > "$IP_DIR/parsed_full.txt"
-
-  if [ -s "$IP_DIR/parsed_full.txt" ]; then
-    ok "Parsed full open ports:"
-    column -t -s';' "$IP_DIR/parsed_full.txt" 2>/dev/null || cat "$IP_DIR/parsed_full.txt"
-  else
-    warn "No open ports parsed from full scan for $ip"
-  fi
-
-  build_new_ports_only "$IP_DIR/parsed_quick.txt" "$IP_DIR/parsed_full.txt" "$IP_DIR/parsed_new.txt"
-
-  if [[ -s "$IP_DIR/parsed_new.txt" ]]; then
-    echo -e "${RED}[!] New ports found from full scan:${NC}"
-    column -t -s';' "$IP_DIR/parsed_new.txt" 2>/dev/null || cat "$IP_DIR/parsed_new.txt"
-
-    info "Updating exploit summaries using parsed_full.txt..."
-    generate_exploit_summary "$IP_DIR" "$IP_DIR/parsed_full.txt"
-
-    info "Enumerating only NEW ports..."
-    while IFS=';' read -r port service product; do
-      enum_service "$ip" "$port" "$service" "$product"
-    done < "$IP_DIR/parsed_new.txt"
-
-    build_web_targets "$ip" "$IP_DIR/parsed_new.txt" "$IP_DIR/nuclei_targets_new.txt"
-
-    if [ -s "$IP_DIR/nuclei_targets_new.txt" ]; then
-      info "Running Nuclei on NEW web targets only..."
-      sed 's/^/    - /' "$IP_DIR/nuclei_targets_new.txt"
-
-      print_cmd "timeout $NUCLEI_TIMEOUT nuclei -s critical,high,medium -l \"$IP_DIR/nuclei_targets_new.txt\" -o \"$IP_DIR/nuclei_new.txt\" -nh -ni"
-
-      timeout "$NUCLEI_TIMEOUT" nuclei \
-        -s critical,high,medium \
-        -l "$IP_DIR/nuclei_targets_new.txt" \
-        -o "$IP_DIR/nuclei_new.txt" \
-        -nh -ni \
-        2>&1 | tee "$IP_DIR/nuclei_new_live.log"
+    else
+      warn "No nuclei targets for $ip"
     fi
-  else
-    ok "No new ports found. Skipping re-enumeration."
-  fi
+  ) &
+
+  # LIMIT 3 concurrent
+  while [ "$(jobs -rp | wc -l)" -ge 3 ]; do
+    sleep 1
+  done
 done
+
+wait
+ok "All Nuclei scans completed"
+
+section "TAHAP 2: RUSTSCAN PARALLEL (ALL TARGETS)"
+
+for ip in $(safe_target_list); do
+  (
+    subsection "RUSTSCAN: $ip"
+
+    IP_DIR="$SCAN_DIR/$ip"
+
+    run_rustscan_full "$ip"
+
+    parse_nmap_open "$IP_DIR/full.txt" > "$IP_DIR/parsed_full.txt"
+
+    if [ -s "$IP_DIR/parsed_full.txt" ]; then
+      ok "Parsed full open ports:"
+      column -t -s';' "$IP_DIR/parsed_full.txt" 2>/dev/null || cat "$IP_DIR/parsed_full.txt"
+    else
+      warn "No open ports for $ip"
+    fi
+
+    build_new_ports_only \
+      "$IP_DIR/parsed_quick.txt" \
+      "$IP_DIR/parsed_full.txt" \
+      "$IP_DIR/parsed_new.txt"
+
+    if [[ -s "$IP_DIR/parsed_new.txt" ]]; then
+      echo -e "${RED}[!] New ports:${NC}"
+      column -t -s';' "$IP_DIR/parsed_new.txt" 2>/dev/null || cat "$IP_DIR/parsed_new.txt"
+
+      generate_exploit_summary "$IP_DIR" "$IP_DIR/parsed_full.txt"
+
+      while IFS=';' read -r port service product; do
+        enum_service "$ip" "$port" "$service" "$product"
+      done < "$IP_DIR/parsed_new.txt"
+
+      build_web_targets "$ip" "$IP_DIR/parsed_new.txt" "$IP_DIR/nuclei_targets_new.txt"
+
+      if [ -s "$IP_DIR/nuclei_targets_new.txt" ]; then
+        info "Running Nuclei for NEW ports..."
+
+        nuclei \
+          -s critical,high,medium \
+          -l "$IP_DIR/nuclei_targets_new.txt" \
+          -o "$IP_DIR/nuclei_new.txt" \
+          -nh -ni \
+          2>&1 | tee "$IP_DIR/nuclei_new_live.log"
+      fi
+    else
+      ok "No new ports for $ip"
+    fi
+  ) &
+
+  while [ "$(jobs -rp | wc -l)" -ge 3 ]; do
+    sleep 1
+  done
+done
+
+wait
+ok "All RustScan completed"
 
 # ==========================================
 # WAIT UDP SCANS
