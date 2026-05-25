@@ -717,8 +717,6 @@ enum_service() {
     return
   fi
 
-  info "Enumerating service=$service product=\"$product\" on port $port..."
-
   # -------------------------
   # HTTP / HTTPS
   # -------------------------
@@ -727,7 +725,7 @@ enum_service() {
       warn "Skipping Web Discovery for WinRM-like port ($port) on $ip"
       return
     fi
-
+    info "Enumerating service=$service product=\"$product\" on port $port..."
     local scheme="http"
     if [[ "$service" == *https* || "$service" == ssl/http* || "$port" == "443" || "$port" == "8443" || "$port" == "9443" || "$port" == "10443" ]]; then
       scheme="https"
@@ -774,6 +772,7 @@ enum_service() {
     if [ -f "$ip_dir/.smb_enum_done" ]; then
       info "SMB enum already done for $ip. Skipping duplicate SMB enum on port $port."
     else
+      info "Enumerating service=$service product=\"$product\" on port $port..."
       if has_cmd enum4linux-ng; then
         print_cmd "enum4linux-ng -A \"$ip\""
         enum4linux-ng -A "$ip" 2>&1 | tee "$ip_dir/smb.txt"
@@ -788,6 +787,7 @@ enum_service() {
   # -------------------------
   # DNS - blackbox
   # -------------------------
+  # 1. Pastikan skrip hanya masuk ke modul DNS jika layanannya sesuai
   if [[ "$service" == domain* || "$service" == dns* || "$port" == "53" ]]; then
     local dns_dir="$ip_dir/dns_$port"
     mkdir -p "$dns_dir"
@@ -807,10 +807,17 @@ enum_service() {
       dig @"$ip" -x "$ip" +short 2>&1 | tee "$dns_dir/reverse_lookup.txt"
     fi
 
-    : > "$dns_dir/zone_candidates.txt"
+    # 2. Logika pengecekan AXFR dipisahkan di dalam modul DNS
+    # (Contoh di bawah mengasumsikan adanya file zone_candidates.txt yang diisi sebelumnya)
+    if [[ -s "$dns_dir/zone_candidates.txt" ]]; then
+      info "Zone candidates found, proceeding with AXFR..."
+      # Masukkan perintah AXFR/dig di sini jika ada kandidat
     else
+      # Pesan warn dipindahkan ke sini agar hanya muncul saat memeriksa DNS
       warn "No DNS zone candidates discovered. Skipping AXFR."
-  fi
+    fi
+
+  fi # Akhir dari pengecekan port/service DNS
 
   # -------------------------
   # SNMP - blackbox
