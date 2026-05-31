@@ -56,7 +56,7 @@ fi
 
 mkdir -p "$SCAN_DIR"
 echo -e "${GREEN}[+] Running Nuclei in background"
-nohup nuclei -s critical,high,medium \
+nohup timeout "$NUCLEI_TIMEOUT" nuclei -s critical,high,medium \
   -l "$TARGETS" \
   -o "$SCAN_DIR/general_nuclei.txt" \
   -nh -ni -mhe 25 -ept http \
@@ -480,7 +480,7 @@ is_high_confidence_exploit() {
 
   cleaned=$(normalize_product_banner "$product")
   title_lc=$(echo "$title" | tr '[:upper:]' '[:lower:]')
-  version=$(extract_version "$cleaned $query")
+  version=$(extract_version "$cleaned")
   vendor=$(extract_vendor "$cleaned")
 
   [[ -z "$version" || -z "$vendor" ]] && return 1
@@ -548,19 +548,59 @@ generate_exploit_summary() {
     local high_queries
     high_queries=$(mktemp)
 
+    
+	product_version=$(extract_version "$product")
+
+	[[ -z "$product_version" ]] && {
+	  rm -f "$high_queries"
+	  continue
+	}
+
     build_searchsploit_queries_high "$product" \
       | sed 's/[?]//g' \
       | sed -E 's/[[:space:]]+/ /g' \
       | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' \
       | awk 'length($0) >= 2' \
-      | sort -u > "$high_queries"
+      | sort -u | head -n 5 > "$high_queries"
 
-    while IFS= read -r ss_query; do
-      [[ -z "$ss_query" ]] && continue
+
+	while IFS= read -r ss_query; do
+	  [[ -z "$ss_query" ]] && continue
+
+	  # ✅ FILTER QUERY (WAJIB TARUH DI SINI)
+	  [[ ${#ss_query} -lt 3 ]] && continue
+
+	  if [[ "$ss_query" =~ ^[0-9]+\.[0-9]+$ ]]; then
+	    continue
+	  fi
+
+	  if [[ "$ss_query" =~ ^(microsoft|windows|linux|unix)$ ]]; then
+	    continue
+	  fi
+
+	  if [[ "$ss_query" =~ ^(kerberos-sec|msrpc|ncacn_http|netbios-ssn|kpasswd5|domain)$ ]]; then
+	    continue
+	  fi
 
       if grep -Fxqi "HIGH::$ss_query" "$tmp_queries_seen"; then
         continue
       fi
+
+	  # =====================
+	  # STRICT MICROSOFT FILTER
+	  # =====================
+	  if echo "$ss_query" | grep -qiE '^microsoft$'; then
+	  	continue
+	  fi
+	  if echo "$ss_query" | grep -qiE '^microsoft[[:space:]]+[0-9]'; then
+	  	continue
+	  fi
+	  if echo "$ss_query" | grep -qi 'httpapi'; then
+	  	continue
+	  fi
+
+
+
       echo "HIGH::$ss_query" >> "$tmp_queries_seen"
 
       print_cmd "COLUMNS=300 searchsploit -t \"$ss_query\" | remote filter"
@@ -586,7 +626,7 @@ generate_exploit_summary() {
           echo "$norm_line" >> "$tmp_loc"
         fi
       done < <(
-        COLUMNS=300 searchsploit -t "$ss_query" 2>/dev/null \
+        timeout 5s COLUMNS=300 searchsploit -t "$ss_query" 2>/dev/null \
           | grep -viE "Shellcodes:|No Results|Exploit Title|----"
       )
 
@@ -605,14 +645,43 @@ generate_exploit_summary() {
       | sed -E 's/[[:space:]]+/ /g' \
       | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' \
       | awk 'length($0) >= 3' \
-      | sort -u > "$generic_queries"
+      | sort -u | head -n 5 > "$generic_queries"
 
-    while IFS= read -r ss_query; do
-      [[ -z "$ss_query" ]] && continue
+    
+	while IFS= read -r ss_query; do
+	  [[ -z "$ss_query" ]] && continue
+
+	  # ✅ FILTER QUERY (WAJIB TARUH DI SINI)
+	  [[ ${#ss_query} -lt 3 ]] && continue
+
+	  if [[ "$ss_query" =~ ^[0-9]+\.[0-9]+$ ]]; then
+	    continue
+	  fi
+
+	  if [[ "$ss_query" =~ ^(microsoft|windows|linux|unix)$ ]]; then
+	    continue
+	  fi
+
+	  if [[ "$ss_query" =~ ^(kerberos-sec|msrpc|ncacn_http|netbios-ssn|kpasswd5|domain)$ ]]; then
+	    continue
+	  fi
 
       if grep -Fxqi "GENERIC::$ss_query" "$tmp_queries_seen"; then
         continue
       fi
+      # =====================
+      # STRICT MICROSOFT FILTER
+      # =====================
+      if echo "$ss_query" | grep -qiE '^microsoft$'; then
+      	continue
+      fi
+      if echo "$ss_query" | grep -qiE '^microsoft[[:space:]]+[0-9]'; then
+      	continue
+      fi
+      if echo "$ss_query" | grep -qi 'httpapi'; then
+      	continue
+      fi
+
       echo "GENERIC::$ss_query" >> "$tmp_queries_seen"
 
       print_cmd "COLUMNS=300 searchsploit -t \"$ss_query\" | generic remote filter"
@@ -631,7 +700,7 @@ generate_exploit_summary() {
           echo "$norm_line" >> "$tmp_loc"
         fi
       done < <(
-        COLUMNS=300 searchsploit -t "$ss_query" 2>/dev/null \
+        timeout 5s COLUMNS=300 searchsploit -t "$ss_query" 2>/dev/null \
           | grep -viE "Shellcodes:|No Results|Exploit Title|----"
       )
 
@@ -867,7 +936,7 @@ EOF
 
         # 1. TEST UTAMA: Coba Full Walk super cepat pakai snmpbulkwalk v2c
         print_cmd "snmpbulkwalk -c \"$community\" -v2c -Cr30 -t 10  \"$ip\" .1"
-        snmpbulkwalk -c "$community" -v2c -Cr30 -t 10 "$ip" .1 2>/dev/null \
+        timeout 5m snmpbulkwalk -c "$community" -v2c -Cr30 -t 10 "$ip" .1 2>/dev/null \
           | tee "$snmp_dir/snmpwalk_${safe_community}_full_v2c.txt"
 
         # 2. FALLBACK: Jika v2c gagal/kosong, coba full walk pakai snmpwalk v1 biasa
@@ -876,14 +945,14 @@ EOF
           rm -f "$snmp_dir/snmpwalk_${safe_community}_full_v2c.txt"
           
           print_cmd "snmpwalk -c \"$community\" -v1 -t 10 \"$ip\" (Fallback v1)"
-          snmpwalk -c "$community" -v1 -t 10 "$ip" 2>/dev/null \
+          timeout 5m snmpwalk -c "$community" -v1 -t 10 "$ip" 2>/dev/null \
             | tee "$snmp_dir/snmpwalk_${safe_community}_full_v1.txt"
         fi
 
         # 3. TARGETED JACKPOT SCAN: Tembak langsung OID angka Net-SNMP Extend
         # Tetap jalankan ini secara terpisah untuk mengantisipasi jika Full Walk di atas terkena timeout/tidak lengkap
         print_cmd "snmpwalk -c \"$community\" -v2c -t 10 \"$ip\" .1.3.6.1.4.1.8072.1.3"
-        snmpwalk -c "$community" -v2c -t 10 "$ip" .1.3.6.1.4.1.8072.1.3 2>/dev/null \
+        timeout 5m snmpwalk -c "$community" -v2c -t 10 "$ip" .1.3.6.1.4.1.8072.1.3 2>/dev/null \
           | tee "$snmp_dir/snmpwalk_${safe_community}_extensions.txt"
 
       done < "$snmp_dir/communities_found.txt"
@@ -900,14 +969,13 @@ run_rustscan_full() {
   local ip="$1"
   local ip_dir="$SCAN_DIR/$ip"
 
-  print_cmd "timeout $RUSTSCAN_TIMEOUT rustscan -a \"$ip\" -r 1-65535 --tries 3 --ulimit 5000 -- -Pn -sCV --stats-every $NMAP_STATS_EVERY -oN \"$ip_dir/full.txt\""
-
+  print_cmd "timeout $RUSTSCAN_TIMEOUT rustscan -a \"$ip\" -r 1-65535 --tries 3 --ulimit 5000 -- -Pn -sCV --script-timeout 4m --stats-every $NMAP_STATS_EVERY -oN \"$ip_dir/full.txt\""
   timeout "$RUSTSCAN_TIMEOUT" rustscan -a "$ip" \
     -r 1-65535 \
     --tries 3 \
     --ulimit 5000 \
     -- \
-    -Pn -sCV --stats-every "$NMAP_STATS_EVERY" -oN "$ip_dir/full.txt" \
+    -Pn -sCV --script-timeout 4m --stats-every "$NMAP_STATS_EVERY" -oN "$ip_dir/full.txt" \
     2>&1 | tee "$ip_dir/rustscan_live.log"
 }
 
@@ -1108,7 +1176,7 @@ for ip in $(safe_target_list); do
       info "Running Nuclei..."
       sed 's/^/    - /' "$IP_DIR/nuclei_targets.txt"
 
-      nuclei \
+      timeout "$NUCLEI_TIMEOUT" nuclei \
         -s critical,high,medium \
         -l "$IP_DIR/nuclei_targets.txt" \
         -o "$IP_DIR/nuclei.txt" \
@@ -1167,7 +1235,7 @@ for ip in $(safe_target_list); do
       if [ -s "$IP_DIR/nuclei_targets_new.txt" ]; then
         info "Running Nuclei for NEW ports..."
 
-        nuclei \
+        timeout "$NUCLEI_TIMEOUT" nuclei \
           -s critical,high,medium \
           -l "$IP_DIR/nuclei_targets_new.txt" \
           -o "$IP_DIR/nuclei_new.txt" \
