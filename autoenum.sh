@@ -263,6 +263,42 @@ build_web_targets() {
 }
 
 
+# =========================
+# BUILD NON-WEB TARGETS (ip:port)
+# =========================
+build_nonweb_targets() {
+  local ip="$1"
+  local parsed_file="$2"
+  local output_file="$3"
+
+  : > "$output_file"
+
+  if [ ! -s "$parsed_file" ]; then
+    return
+  fi
+
+  while IFS=';' read -r port service product; do
+    [[ -z "$port" || -z "$service" ]] && continue
+
+    # skip web service
+    if [[ "$service" == http* || "$service" == *http* || "$service" == https* || "$service" == ssl/http* ]]; then
+      continue
+    fi
+
+    # skip noise
+    case "$service" in
+      ""|"unknown"|"tcpwrapped")
+        continue
+        ;;
+    esac
+
+    echo "$ip:$port" >> "$output_file"
+
+  done < "$parsed_file"
+
+  sort -u "$output_file" -o "$output_file"
+}
+
 # ==========================================
 # NORMALIZE PRODUCT BANNER
 # ==========================================
@@ -805,7 +841,7 @@ enum_service() {
     mkdir -p "$web_dir"
 
     print_cmd "curl -k -s -L --max-time 7 \"$url\""
-    curl -k -s -L --max-time 7 "$url" | tee "$web_dir/index.html" >/dev/null
+    timeout 1m curl -k -s -L --max-time 7 "$url" | tee "$web_dir/index.html" >/dev/null
 
     if grep -qiE "wordpress|wp-content|wp-includes" "$web_dir/index.html"; then
       ok "WordPress detected on $url"
@@ -863,9 +899,9 @@ enum_service() {
 
     info "Running DNS blackbox enumeration on $ip:$port"
 
-    print_cmd "nmap -Pn -p \"$port\" -sCV --script dns-nsid,dns-recursion,dns-service-discovery \"$ip\" -oN \"$dns_dir/dns_basic.txt\""
+    print_cmd "nmap  --host-timeout $QUICK_HOST_TIMEOUT -Pn -p \"$port\" -sCV --script dns-nsid,dns-recursion,dns-service-discovery \"$ip\" -oN \"$dns_dir/dns_basic.txt\""
 
-    nmap -Pn -p "$port" -sCV \
+    nmap  --host-timeout $QUICK_HOST_TIMEOUT -Pn -p "$port" -sCV \
       --script dns-nsid,dns-recursion,dns-service-discovery \
       "$ip" \
       -oN "$dns_dir/dns_basic.txt" \
@@ -1025,6 +1061,7 @@ generate_global_summary() {
   local global_ffuf="$SCAN_DIR/global_ffuf.txt"
   local global_web="$SCAN_DIR/global_web_targets.txt"
   local global_wp="$SCAN_DIR/global_wordpress.txt"
+  local global_nuclei_nonweb="$SCAN_DIR/global_nuclei_nonweb.txt"
 
 
   print_cmd "find \"$SCAN_DIR\" -name exploits_remote.txt -exec cat {} \\; | sort -u > \"$global_remote\""
@@ -1087,6 +1124,14 @@ generate_global_summary() {
     | sed 's|.*/scans/\([^/]*\)/web_\([0-9]*\).*|\1:\2|' \
     | sort -u > "$global_wp"
 
+
+  print_cmd "Aggregating non-web nuclei results..."
+
+  find "$SCAN_DIR" -type f \( -name "nuclei_nonweb_quick.txt" -o -name "nuclei_nonweb_new.txt" \) -print0 \
+    | xargs -0 cat 2>/dev/null \
+    | sort -u > "$global_nuclei_nonweb"
+
+
   ok "Global files:"
   echo "    - $global_remote"
   echo "    - $global_privesc"
@@ -1096,6 +1141,7 @@ generate_global_summary() {
   echo "    - $global_ffuf"
   echo "    - $global_web"
   echo "    - $global_wp"
+  echo "    - $global_nuclei_nonweb"
 
 }
 
@@ -1118,7 +1164,7 @@ for ip in $(safe_target_list); do
   info "Nmap Quick Scan..."
   print_cmd "nmap -sC -sV --host-timeout $QUICK_HOST_TIMEOUT --version-intensity 0 --stats-every $NMAP_STATS_EVERY -Pn \"$ip\" -oN \"$IP_DIR/quick.txt\""
 
-  nmap -sC -sV \
+  timeout $QUICK_HOST_TIMEOUT nmap -n -sC -sV \
     --host-timeout "$QUICK_HOST_TIMEOUT" \
     --version-intensity 0 \
     --stats-every "$NMAP_STATS_EVERY" \
@@ -1139,7 +1185,7 @@ for ip in $(safe_target_list); do
   print_cmd "$SUDO_BIN nmap -sU -sV --top-ports 20 --max-retries 1 --host-timeout $UDP_HOST_TIMEOUT --stats-every $NMAP_STATS_EVERY -Pn \"$ip\" -oN \"$IP_DIR/udp_fast.txt\""
 
   (
-    $SUDO_BIN nmap -sU -sV \
+    $SUDO_BIN timeout $QUICK_HOST_TIMEOUT nmap -n -sU -sV \
       --top-ports 20 \
       --max-retries 1 \
       --host-timeout "$UDP_HOST_TIMEOUT" \
@@ -1152,6 +1198,28 @@ for ip in $(safe_target_list); do
   UDP_PIDS+=($!)
 
   generate_exploit_summary "$IP_DIR" "$IP_DIR/parsed_quick.txt"
+
+  # =========================
+  # NUCLEI NON-WEB (QUICK)
+  # =========================
+  build_nonweb_targets "$ip" "$IP_DIR/parsed_quick.txt" "$IP_DIR/nuclei_targets_nonweb_quick.txt"
+
+  if [ -s "$IP_DIR/nuclei_targets_nonweb_quick.txt" ]; then
+    info "Running Nuclei NON-WEB (QUICK)..."
+    sed 's/^/    - /' "$IP_DIR/nuclei_targets_nonweb_quick.txt"
+
+    print_cmd "nuclei -l nuclei_targets_nonweb_quick.txt -ept http"
+
+    timeout "$NUCLEI_TIMEOUT" nuclei \
+      -l "$IP_DIR/nuclei_targets_nonweb_quick.txt" \
+      -o "$IP_DIR/nuclei_nonweb_quick.txt" \
+      -s critical,high,medium \
+      -nh -ni -ept http \
+      2>&1 | tee "$IP_DIR/nuclei_nonweb_quick.log"
+  else
+    warn "No non-web quick targets for $ip"
+  fi
+
 
   while IFS=';' read -r port service product; do
     enum_service "$ip" "$port" "$service" "$product"
@@ -1231,6 +1299,27 @@ for ip in $(safe_target_list); do
       done < "$IP_DIR/parsed_new.txt"
 
       build_web_targets "$ip" "$IP_DIR/parsed_new.txt" "$IP_DIR/nuclei_targets_new.txt"
+
+      # =========================
+      # NUCLEI NON-WEB (NEW PORTS)
+      # =========================
+      build_nonweb_targets "$ip" "$IP_DIR/parsed_new.txt" "$IP_DIR/nuclei_targets_nonweb_new.txt"
+
+      if [ -s "$IP_DIR/nuclei_targets_nonweb_new.txt" ]; then
+        info "Running Nuclei NON-WEB (NEW PORTS)..."
+        sed 's/^/    - /' "$IP_DIR/nuclei_targets_nonweb_new.txt"
+
+        print_cmd "nuclei -l nuclei_targets_nonweb_new.txt -ept http"
+
+        timeout "$NUCLEI_TIMEOUT" nuclei \
+          -l "$IP_DIR/nuclei_targets_nonweb_new.txt" \
+          -o "$IP_DIR/nuclei_nonweb_new.txt" \
+          -s critical,high,medium \
+          -nh -ni -ept http \
+          2>&1 | tee "$IP_DIR/nuclei_nonweb_new.log"
+      else
+        warn "No non-web new targets for $ip"
+      fi
 
       if [ -s "$IP_DIR/nuclei_targets_new.txt" ]; then
         info "Running Nuclei for NEW ports..."
