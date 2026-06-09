@@ -1401,3 +1401,46 @@ generate_global_summary
 echo -e "\n${GREEN}[+] DONE!${NC}"
 echo -e "${GREEN}[+] Check output in:${NC} $SCAN_DIR"
 echo -e "${GREEN}[+] Master log:${NC} $MASTER_LOG"
+
+# ==========================================
+# FINAL: GENERATE EXCEL REPORT (AUTOENUM)
+# ==========================================
+section "FINAL: GENERATING EXCEL REPORT"
+
+AUTOENUM_SCRIPT="/opt/autorecon/generate_excel_autoenum.py"
+LOCAL_SCRIPT="$SCAN_DIR/autoenum_generateexcel.py"
+
+if [ ! -f "$AUTOENUM_SCRIPT" ]; then
+  err "Autoenum script not found at: $AUTOENUM_SCRIPT"
+  warn "Skipping Excel report generation."
+else
+  if ! has_cmd python3; then
+    err "python3 not found. Cannot execute autoenum script."
+    warn "Skipping Excel report generation."
+  else
+    info "Preparing Autoenum script..."
+
+    print_cmd "cp \"$AUTOENUM_SCRIPT\" \"$LOCAL_SCRIPT\""
+    cp "$AUTOENUM_SCRIPT" "$LOCAL_SCRIPT"
+
+    if [ ! -f "$LOCAL_SCRIPT" ]; then
+      err "Failed to copy autoenum script."
+    else
+      info "Running Autoenum Python script..."
+
+      (
+        cd "$SCAN_DIR" || exit
+
+        print_cmd "python3 generate_excel_autoenum.py"
+
+        python3 generate_excel_autoenum.py 2>&1 | tee "$SCAN_DIR/autoenum.log"
+
+        if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+          err "Autoenum script execution failed!"
+        else
+          ok "Excel report generated successfully."
+        fi
+      )
+    fi
+  fi
+fi
