@@ -1407,7 +1407,7 @@ echo -e "${GREEN}[+] Master log:${NC} $MASTER_LOG"
 # ==========================================
 section "FINAL: GENERATING EXCEL REPORT"
 
-AUTOENUM_SCRIPT="/opt/autorecon/generate_excel_autoenum.py"
+AUTOENUM_SCRIPT="/opt/autorecon/autoenum_generateexcel.py"
 LOCAL_SCRIPT="$SCAN_DIR/autoenum_generateexcel.py"
 
 if [ ! -f "$AUTOENUM_SCRIPT" ]; then
