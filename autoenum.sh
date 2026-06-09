@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # ==========================================================
 # OSCP AUTOMATION SCANNER - ULTIMATE REVISED V4.1
 # ==========================================================
@@ -585,12 +584,12 @@ generate_exploit_summary() {
     high_queries=$(mktemp)
 
     
-	product_version=$(extract_version "$product")
+  product_version=$(extract_version "$product")
 
-	[[ -z "$product_version" ]] && {
-	  rm -f "$high_queries"
-	  continue
-	}
+  [[ -z "$product_version" ]] && {
+    rm -f "$high_queries"
+    continue
+  }
 
     build_searchsploit_queries_high "$product" \
       | sed 's/[?]//g' \
@@ -600,40 +599,40 @@ generate_exploit_summary() {
       | sort -u | head -n 5 > "$high_queries"
 
 
-	while IFS= read -r ss_query; do
-	  [[ -z "$ss_query" ]] && continue
+  while IFS= read -r ss_query; do
+    [[ -z "$ss_query" ]] && continue
 
-	  # ✅ FILTER QUERY (WAJIB TARUH DI SINI)
-	  [[ ${#ss_query} -lt 3 ]] && continue
+    # ✅ FILTER QUERY (WAJIB TARUH DI SINI)
+    [[ ${#ss_query} -lt 3 ]] && continue
 
-	  if [[ "$ss_query" =~ ^[0-9]+\.[0-9]+$ ]]; then
-	    continue
-	  fi
+    if [[ "$ss_query" =~ ^[0-9]+\.[0-9]+$ ]]; then
+      continue
+    fi
 
-	  if [[ "$ss_query" =~ ^(microsoft|windows|linux|unix)$ ]]; then
-	    continue
-	  fi
+    if [[ "$ss_query" =~ ^(microsoft|windows|linux|unix)$ ]]; then
+      continue
+    fi
 
-	  if [[ "$ss_query" =~ ^(kerberos-sec|msrpc|ncacn_http|netbios-ssn|kpasswd5|domain)$ ]]; then
-	    continue
-	  fi
+    if [[ "$ss_query" =~ ^(kerberos-sec|msrpc|ncacn_http|netbios-ssn|kpasswd5|domain)$ ]]; then
+      continue
+    fi
 
       if grep -Fxqi "HIGH::$ss_query" "$tmp_queries_seen"; then
         continue
       fi
 
-	  # =====================
-	  # STRICT MICROSOFT FILTER
-	  # =====================
-	  if echo "$ss_query" | grep -qiE '^microsoft$'; then
-	  	continue
-	  fi
-	  if echo "$ss_query" | grep -qiE '^microsoft[[:space:]]+[0-9]'; then
-	  	continue
-	  fi
-	  if echo "$ss_query" | grep -qi 'httpapi'; then
-	  	continue
-	  fi
+    # =====================
+    # STRICT MICROSOFT FILTER
+    # =====================
+    if echo "$ss_query" | grep -qiE '^microsoft$'; then
+      continue
+    fi
+    if echo "$ss_query" | grep -qiE '^microsoft[[:space:]]+[0-9]'; then
+      continue
+    fi
+    if echo "$ss_query" | grep -qi 'httpapi'; then
+      continue
+    fi
 
 
 
@@ -684,23 +683,23 @@ generate_exploit_summary() {
       | sort -u | head -n 5 > "$generic_queries"
 
     
-	while IFS= read -r ss_query; do
-	  [[ -z "$ss_query" ]] && continue
+  while IFS= read -r ss_query; do
+    [[ -z "$ss_query" ]] && continue
 
-	  # ✅ FILTER QUERY (WAJIB TARUH DI SINI)
-	  [[ ${#ss_query} -lt 3 ]] && continue
+    # ✅ FILTER QUERY (WAJIB TARUH DI SINI)
+    [[ ${#ss_query} -lt 3 ]] && continue
 
-	  if [[ "$ss_query" =~ ^[0-9]+\.[0-9]+$ ]]; then
-	    continue
-	  fi
+    if [[ "$ss_query" =~ ^[0-9]+\.[0-9]+$ ]]; then
+      continue
+    fi
 
-	  if [[ "$ss_query" =~ ^(microsoft|windows|linux|unix)$ ]]; then
-	    continue
-	  fi
+    if [[ "$ss_query" =~ ^(microsoft|windows|linux|unix)$ ]]; then
+      continue
+    fi
 
-	  if [[ "$ss_query" =~ ^(kerberos-sec|msrpc|ncacn_http|netbios-ssn|kpasswd5|domain)$ ]]; then
-	    continue
-	  fi
+    if [[ "$ss_query" =~ ^(kerberos-sec|msrpc|ncacn_http|netbios-ssn|kpasswd5|domain)$ ]]; then
+      continue
+    fi
 
       if grep -Fxqi "GENERIC::$ss_query" "$tmp_queries_seen"; then
         continue
@@ -709,13 +708,13 @@ generate_exploit_summary() {
       # STRICT MICROSOFT FILTER
       # =====================
       if echo "$ss_query" | grep -qiE '^microsoft$'; then
-      	continue
+        continue
       fi
       if echo "$ss_query" | grep -qiE '^microsoft[[:space:]]+[0-9]'; then
-      	continue
+        continue
       fi
       if echo "$ss_query" | grep -qi 'httpapi'; then
-      	continue
+        continue
       fi
 
       echo "GENERIC::$ss_query" >> "$tmp_queries_seen"
@@ -1074,22 +1073,30 @@ generate_global_summary() {
     | xargs -0 cat 2>/dev/null \
     | sort -u > "$global_privesc"
 
+
   : > "$global_ports"
+
   for ip in $(safe_target_list); do
     local pf="$SCAN_DIR/$ip/parsed_full.txt"
     local pq="$SCAN_DIR/$ip/parsed_quick.txt"
     local pu="$SCAN_DIR/$ip/parsed_udp.txt"
 
-    if [ -s "$pf" ]; then
-      awk -F';' -v ip="$ip" '{print ip ";tcp;" $0}' "$pf" >> "$global_ports"
-    elif [ -s "$pq" ]; then
-      awk -F';' -v ip="$ip" '{print ip ";tcp;" $0}' "$pq" >> "$global_ports"
-    fi
+    # ✅ TCP: merge quick + full
+    for f in "$pq" "$pf"; do
+      if [ -s "$f" ]; then
+        awk -F';' -v ip="$ip" '{print ip ";tcp;" $0}' "$f" >> "$global_ports"
+      fi
+    done
 
+    # ✅ UDP
     if [ -s "$pu" ]; then
       awk -F';' -v ip="$ip" '{print ip ";udp;" $0}' "$pu" >> "$global_ports"
     fi
   done
+
+  # ✅ FINAL DEDUP (SMART)
+  sort -t';' -u -k1,1 -k2,2 -k3,3 "$global_ports" -o "$global_ports"
+
 
   sort -u "$global_ports" -o "$global_ports"
 
