@@ -998,7 +998,7 @@ echo -e "${PURPLE}====================================================${NC}"
 clean_nxc_file "$RAW_OUT"
 
 sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2})?)?[mGK]//g" "$RAW_OUT" | \
-grep -aE "\[\+\]|READ|WRITE|Export|VALID USERNAME|USER FOUND|Done|userenum|VALID LOGIN|VALID USER" | \
+grep -aEi "\[\+\]|READ|WRITE|Export|VALID USER|userenum|VULN|ZEROLOGON|PRINTNIGHTMARE|SMBGHOST|MS17" | \
 grep -av "STATUS_ACCESS_DENIED" | \
 sort -u > "$FINAL_OUT"
 
