@@ -386,18 +386,29 @@ for ip in "${!PROTO_MAP[@]}"; do
                 else
                     timeout 30s nxc smb "$ip" -u "$user" -p "$pass" --local-auth -M ntlm_reflection | tee "$TMP_RES"
                 fi
-                # ---------- BLOODHOUND (DOMAIN ONLY) ----------
                 echo "[DEBUG] BH check: DOMAIN=$DOMAIN DC_IP=$dc_ip BH_DONE=${BH_DONE[$DOMAIN]}"
+                # ---------- BLOODHOUND (DOMAIN ONLY) ----------
                 if [[ -z "${BH_DONE[$DOMAIN]}" && "$DOMAIN" != "." ]]; then
+                    echo "[DEBUG] Passed BH condition (first run for domain)"
                     if mkdir "$OUTDIR/lock_bh_${DOMAIN}" 2>/dev/null; then
+                        echo "[DEBUG] Lock acquired: $OUTDIR/lock_bh_${DOMAIN}"
                         BH_DIR="$OUTDIR/bloodhound_${ip}"
                         mkdir -p "$BH_DIR"
                         echo -e "${YELLOW}[*] Ingesting AD data via BloodHound...${NC}"
                         (
                             cd "$BH_DIR" || exit
+                            echo "[CMD] timeout 150s bloodhound-ce-python -d \"$DOMAIN\" -dc \"${DC_FQDN_MAP[$DOMAIN]}\" -u \"$user\" -p \"$pass\" -ns \"$dc_ip\" -c all --zip"
                             timeout 150s bloodhound-ce-python -d "$DOMAIN" -dc "${DC_FQDN_MAP[$DOMAIN]}" -u "$user" -p "$pass" -ns "$dc_ip" -c all --zip | tee bloodhound_run.log
+                            echo "[DEBUG] BloodHound finished with exit code: $?"
                         )
+
+                    else
+                        echo "[DEBUG] SKIPPED BloodHound → lock folder already exists"
+
                     fi
+
+                else
+                    echo "[DEBUG] SKIPPED BloodHound → condition not met"
                 fi
 
                 # ---------- LSASSY ----------
