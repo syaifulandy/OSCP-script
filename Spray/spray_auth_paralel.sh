@@ -360,7 +360,7 @@ process_target_proto() {
                     echo -e "${YELLOW}[*] Ingesting AD data via BloodHound...${NC}"
                     (
                         cd "$BH_DIR" || exit
-                        timeout 150s bloodhound-python -d "$DOMAIN" -dc "${DC_FQDN_MAP[$DOMAIN]}" -u "$user" -p "$pass" -ns "$dc_ip" -c all >bloodhound_run.log 2>&1
+                        timeout 150s bloodhound-ce-python -d "$DOMAIN" -dc "${DC_FQDN_MAP[$DOMAIN]}" -u "$user" -p "$pass" -ns "$dc_ip" -c all --zip | tee bloodhound_run.log
                     )
                 fi
             fi
