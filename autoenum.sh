@@ -34,7 +34,7 @@ NC="\e[0m"
 # =========================
 # CONFIG
 # =========================
-QUICK_HOST_TIMEOUT="3m"
+QUICK_HOST_TIMEOUT="5m"
 UDP_HOST_TIMEOUT="3m"
 NUCLEI_TIMEOUT="10m"
 RUSTSCAN_TIMEOUT="5m"
@@ -44,6 +44,12 @@ FFUF_SCRIPT="/opt/ffuf/ffufscan.sh"
 WPSCAN_SCRIPT="/opt/wpscan/wpscan.sh"
 
 UDP_PIDS=()
+# =========================
+# HELPERS
+# =========================
+print_cmd() {
+  echo -e "${CYAN}[CMD]${NC} $*"
+}
 
 # =========================
 # BASIC VALIDATION
@@ -55,10 +61,11 @@ fi
 
 mkdir -p "$SCAN_DIR"
 echo -e "${GREEN}[+] Running Nuclei in background"
+print_cmd "nohup timeout $NUCLEI_TIMEOUT nuclei -s critical,high,medium -l $TARGETS -o $SCAN_DIR/general_nuclei.txt -nh -ni -mhe 25 -duc -ept http"
 nohup timeout "$NUCLEI_TIMEOUT" nuclei -s critical,high,medium \
   -l "$TARGETS" \
   -o "$SCAN_DIR/general_nuclei.txt" \
-  -nh -ni -mhe 25 -ept http \
+  -nh -ni -mhe 25 -duc -ept http \
   > "$SCAN_DIR/nuclei.log" 2>&1 &
 
 # =========================
@@ -69,12 +76,7 @@ exec > >(tee -a "$MASTER_LOG") 2>&1
 
 echo -e "${GREEN}[+] Master log: $MASTER_LOG${NC}"
 
-# =========================
-# HELPERS
-# =========================
-print_cmd() {
-  echo -e "${CYAN}[CMD]${NC} $*"
-}
+
 
 section() {
   echo -e "\n${GREEN}============================================================${NC}"
@@ -226,9 +228,41 @@ parse_nmap_open() {
   }'
 }
 
-# =========================
-# BUILD WEB TARGETS
-# =========================
+# ==========================================================
+# 1. CORE URL PROBER FUNCTION (ROOT LEVEL)
+# ==========================================================
+probe_port_web() {
+  local target_ip="$1"
+  local target_port="$2"
+  local out_file="$3"
+
+  # Abaikan port administratif WinRM/WSMan agar hemat waktu
+  [[ "$target_port" == "5985" || "$target_port" == "5986" || "$target_port" == "47001" ]] && return
+
+  # Tembak HTTPS dulu (Timeout ketat 3s, connect timeout 2s)
+  local http_code=$(curl -4 -k --max-time 3 --connect-timeout 2 -s -o /dev/null -w "%{http_code}" "https://$target_ip:$target_port")
+  
+  # Jika HTTPS sukses (bukan 000), catat dan exit
+  if [[ -n "$http_code" && "$http_code" != "000" ]]; then
+    echo "https://$target_ip:$target_port" >> "$out_file"
+    return 0
+  fi
+
+  # Fallback: Tembak HTTP biasa jika HTTPS return 000
+  http_code=$(curl -4 -k --max-time 3 --connect-timeout 2 -s -o /dev/null -w "%{http_code}" "http://$target_ip:$target_port")
+  if [[ -n "$http_code" && "$http_code" != "000" ]]; then
+    echo "http://$target_ip:$target_port" >> "$out_file"
+    return 0
+  fi
+
+  return 1
+}
+export -f probe_port_web
+
+
+# ==========================================================
+# 2. BUILD WEB TARGETS RUNNER
+# ==========================================================
 build_web_targets() {
   local ip="$1"
   local parsed_file="$2"
@@ -240,27 +274,28 @@ build_web_targets() {
     return
   fi
 
-  while IFS=';' read -r port service product; do
-    [[ -z "$port" || -z "$service" ]] && continue
+  local tmp_ports=$(mktemp)
+  local tmp_web_discovered=$(mktemp)
 
-    if [[ "$service" == http* || "$service" == *http* || "$service" == https* || "$service" == ssl/http* ]]; then
-      if [[ "$port" == "5985" || "$port" == "5986" || "$port" == "47001" ]]; then
-        continue
-      fi
+  # 1. Kumpulkan semua open ports tanpa peduli apa nama service dari Nmap
+  awk -F';' '{print $1}' "$parsed_file" | sort -u > "$tmp_ports"
 
-      local scheme="http"
+  # 2. Eksekusi Parallel Probing menggunakan xargs -P (Disesuaikan ke -P 5 agar aman di background)
+  if [ -s "$tmp_ports" ]; then
+    info "Probing hidden web services on $ip using controlled parallel xargs..."
+    cat "$tmp_ports" | xargs -P 5 -I{} bash -c 'probe_port_web "$1" "$2" "$3"' _ "$ip" {} "$tmp_web_discovered"
+  fi
 
-      if [[ "$service" == *https* || "$service" == ssl/http* || "$port" == "443" || "$port" == "8443" || "$port" == "9443" || "$port" == "10443" ]]; then
-        scheme="https"
-      fi
+  # 3. Ambil hasil unik dan bersihkan temporary file
+  if [ -s "$tmp_web_discovered" ]; then
+    sort -u "$tmp_web_discovered" > "$output_file"
+    local count=$(wc -l < "$output_file")
+    ok "Found $count valid web endpoints for $ip"
+  fi
 
-      echo "$scheme://$ip:$port" >> "$output_file"
-    fi
-  done < "$parsed_file"
-
-  sort -u "$output_file" -o "$output_file"
+  rm -f "$tmp_ports" "$tmp_web_discovered"
 }
-
+export -f build_web_targets
 
 # =========================
 # BUILD NON-WEB TARGETS (ip:port)
@@ -898,9 +933,9 @@ enum_service() {
 
     info "Running DNS blackbox enumeration on $ip:$port"
 
-    print_cmd "nmap  --host-timeout $QUICK_HOST_TIMEOUT -Pn -p \"$port\" -sCV --script dns-nsid,dns-recursion,dns-service-discovery \"$ip\" -oN \"$dns_dir/dns_basic.txt\""
+    print_cmd "timeout $QUICK_HOST_TIMEOUT nmap  --host-timeout $QUICK_HOST_TIMEOUT -Pn -p \"$port\" -sCV --script dns-nsid,dns-recursion,dns-service-discovery \"$ip\" -oN \"$dns_dir/dns_basic.txt\""
 
-    nmap  --host-timeout $QUICK_HOST_TIMEOUT -Pn -p "$port" -sCV \
+    timeout $QUICK_HOST_TIMEOUT nmap  --host-timeout $QUICK_HOST_TIMEOUT -Pn -p "$port" -sCV \
       --script dns-nsid,dns-recursion,dns-service-discovery \
       "$ip" \
       -oN "$dns_dir/dns_basic.txt" \
@@ -1215,13 +1250,13 @@ for ip in $(safe_target_list); do
     info "Running Nuclei NON-WEB (QUICK)..."
     sed 's/^/    - /' "$IP_DIR/nuclei_targets_nonweb_quick.txt"
 
-    print_cmd "nuclei -l nuclei_targets_nonweb_quick.txt -ept http"
+    print_cmd "timeout $NUCLEI_TIMEOUT nuclei -l $IP_DIR/nuclei_targets_nonweb_quick.txt -o $IP_DIR/nuclei_nonweb_quick.txt -s critical,high,medium -nh -ni -duc -ept http 2>&1 | tee $IP_DIR/nuclei_nonweb_quick.log"
 
     timeout "$NUCLEI_TIMEOUT" nuclei \
       -l "$IP_DIR/nuclei_targets_nonweb_quick.txt" \
       -o "$IP_DIR/nuclei_nonweb_quick.txt" \
       -s critical,high,medium \
-      -nh -ni -ept http \
+      -nh -ni -duc -ept http \
       2>&1 | tee "$IP_DIR/nuclei_nonweb_quick.log"
   else
     warn "No non-web quick targets for $ip"
@@ -1250,12 +1285,12 @@ for ip in $(safe_target_list); do
     if [ -s "$IP_DIR/nuclei_targets.txt" ]; then
       info "Running Nuclei..."
       sed 's/^/    - /' "$IP_DIR/nuclei_targets.txt"
-
+      print_cmd "timeout $NUCLEI_TIMEOUT nuclei -s critical,high,medium -l $IP_DIR/nuclei_targets.txt -o $IP_DIR/nuclei.txt -nh -ni -mhe 25 -duc -pt http -retries 3 2>&1 | tee $IP_DIR/nuclei_live.log"
       timeout "$NUCLEI_TIMEOUT" nuclei \
         -s critical,high,medium \
         -l "$IP_DIR/nuclei_targets.txt" \
         -o "$IP_DIR/nuclei.txt" \
-        -nh -ni -mhe 25 -as -retries 5 \
+        -nh -ni -mhe 25 -duc -pt http -retries 3 \
         2>&1 | tee "$IP_DIR/nuclei_live.log"
     else
       warn "No nuclei targets for $ip"
@@ -1316,13 +1351,13 @@ for ip in $(safe_target_list); do
         info "Running Nuclei NON-WEB (NEW PORTS)..."
         sed 's/^/    - /' "$IP_DIR/nuclei_targets_nonweb_new.txt"
 
-        print_cmd "nuclei -l nuclei_targets_nonweb_new.txt -ept http"
+        print_cmd "timeout $NUCLEI_TIMEOUT nuclei -l $IP_DIR/nuclei_targets_nonweb_new.txt -o $IP_DIR/nuclei_nonweb_new.txt -s critical,high,medium -nh -ni -duc -ept http 2>&1 | tee $IP_DIR/nuclei_nonweb_new.log"
 
         timeout "$NUCLEI_TIMEOUT" nuclei \
           -l "$IP_DIR/nuclei_targets_nonweb_new.txt" \
           -o "$IP_DIR/nuclei_nonweb_new.txt" \
           -s critical,high,medium \
-          -nh -ni -ept http \
+          -nh -ni -duc -ept http \
           2>&1 | tee "$IP_DIR/nuclei_nonweb_new.log"
       else
         warn "No non-web new targets for $ip"
@@ -1330,12 +1365,13 @@ for ip in $(safe_target_list); do
 
       if [ -s "$IP_DIR/nuclei_targets_new.txt" ]; then
         info "Running Nuclei for NEW ports..."
+        print_cmd "timeout $NUCLEI_TIMEOUT nuclei -s critical,high,medium -l $IP_DIR/nuclei_targets_new.txt -o $IP_DIR/nuclei_new.txt -duc -pt http -nh -ni 2>&1 | tee $IP_DIR/nuclei_new_live.log"
 
         timeout "$NUCLEI_TIMEOUT" nuclei \
           -s critical,high,medium \
           -l "$IP_DIR/nuclei_targets_new.txt" \
           -o "$IP_DIR/nuclei_new.txt" \
-          -nh -ni \
+          -duc -pt http  -nh -ni \
           2>&1 | tee "$IP_DIR/nuclei_new_live.log"
       fi
     else
@@ -1431,9 +1467,9 @@ else
       (
         cd "$SCAN_DIR" || exit
 
-        print_cmd "python3 generate_excel_autoenum.py"
+        print_cmd "python3 autoenum_generateexcel.py"
 
-        python3 generate_excel_autoenum.py 2>&1 | tee "$SCAN_DIR/autoenum.log"
+        python3 autoenum_generateexcel.py 2>&1 | tee "$SCAN_DIR/autoenum.log"
 
         if [ "${PIPESTATUS[0]}" -ne 0 ]; then
           err "Autoenum script execution failed!"
