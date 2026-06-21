@@ -86,7 +86,8 @@ $dnsRoot = if ($domainObj) { $domainObj.dnsroot } else { "UNKNOWN" }
 Write-Host "[>] Enumerating Hosts..." -ForegroundColor Cyan
 write-section "HOSTS"
 
-$hosts = Invoke-LDAP { Get-DomainComputer -Properties dnshostname,OperatingSystem -ErrorAction Stop } "Get-DomainComputer"
+
+$hosts = Invoke-LDAP { Get-DomainComputer -Properties dnshostname,OperatingSystem,operatingsystemversion -ErrorAction Stop } "Get-DomainComputer"
 
 if ($hosts) {
     foreach ($h in $hosts) {
@@ -96,7 +97,7 @@ if ($hosts) {
             Where-Object {$_.AddressFamily -eq "InterNetwork"} |
             Select -First 1).IPAddressToString
         } catch {}
-        "$($h.dnshostname);$($h.OperatingSystem);$ip" | Add-Content $outfile
+        "$($h.dnshostname);$($h.OperatingSystem);$($h.operatingsystemversion);$ip" | Add-Content $outfile
     }
 }
 
@@ -257,6 +258,109 @@ foreach ($c in $hosts.dnshostname) {
 
 if ($results) { $results | sort -Unique | Add-Content $outfile }
 else { Add-Content $outfile "Null" }
+
+
+# ===============================
+# 10. ACL PRIVESC CHECK
+# ===============================
+Write-Host "[>] Running ACL PrivEsc Checks..." -ForegroundColor Yellow
+write-section "ACL PRIVESC"
+
+$dangerPerms = @("GenericAll","WriteDACL","WriteOwner","GenericWrite","ForceChangePassword")
+
+try {
+    # ---- GROUPS ----
+    Get-DomainGroup -Server $DC | ForEach-Object {
+        $obj = $_.Name
+
+        Get-DomainObjectAcl -Identity $obj -Server $DC |
+        Where-Object { $dangerPerms -contains $_.ActiveDirectoryRights } |
+        ForEach-Object {
+            $name = ConvertFrom-SID $_.SecurityIdentifier
+            $perm = $_.ActiveDirectoryRights
+
+            if ($name -match $currentUser) {
+                "[!!! CURRENT USER] $name has $perm on GROUP $obj"
+            } else {
+                "[GROUP] $name has $perm on $obj"
+            }
+        }
+    } | Add-Content $outfile
+
+
+    # ---- USERS ----
+    Get-DomainUser -Server $DC | ForEach-Object {
+        $obj = $_.SamAccountName
+
+        Get-DomainObjectAcl -Identity $obj -Server $DC |
+        Where-Object { $dangerPerms -contains $_.ActiveDirectoryRights } |
+        ForEach-Object {
+            $name = ConvertFrom-SID $_.SecurityIdentifier
+            $perm = $_.ActiveDirectoryRights
+
+            if ($name -match $currentUser) {
+                "[!!! CURRENT USER] $name has $perm on USER $obj"
+            } else {
+                "[USER] $name has $perm on $obj"
+            }
+        }
+    } | Add-Content $outfile
+
+
+    # ---- OUs ----
+    Get-DomainOU -Server $DC | ForEach-Object {
+        $obj = $_.Name
+
+        Get-DomainObjectAcl -Identity $obj -Server $DC |
+        Where-Object { $dangerPerms -contains $_.ActiveDirectoryRights } |
+        ForEach-Object {
+            $name = ConvertFrom-SID $_.SecurityIdentifier
+            $perm = $_.ActiveDirectoryRights
+
+            if ($name -match $currentUser) {
+                "[!!! CURRENT USER] $name has $perm on OU $obj"
+            } else {
+                "[OU] $name has $perm on $obj"
+            }
+        }
+    } | Add-Content $outfile
+
+} catch {
+    Add-Content $outfile "[!] ACL PrivEsc check failed"
+}
+
+# ===============================
+# 11. DOMAIN SHARES
+# ===============================
+Write-Host "[>] Enumerating Domain Shares..." -ForegroundColor Cyan
+write-section "DOMAIN SHARES"
+
+try {
+    Find-DomainShare -Server $DC |
+    ForEach-Object {
+        "$($_.ComputerName);$($_.Name);$($_.Remark)"
+    } | Add-Content $outfile
+} catch {
+    Add-Content $outfile "[!] Share enumeration failed"
+}
+
+
+# ===============================
+# 12. NET SESSION
+# ===============================
+Write-Host "[>] Checking Sessions (NetSession)..." -ForegroundColor Cyan
+write-section "NET SESSION"
+
+foreach ($c in $hosts.dnshostname) {
+    try {
+        Get-NetSession -ComputerName $c -ErrorAction Stop |
+        ForEach-Object {
+            "$c;$($_.UserName);$($_.CName)"
+        } | Add-Content $outfile
+    } catch {}
+}
+
+
 
 # ===============================
 # SHARPHOUND AUTO RUN
