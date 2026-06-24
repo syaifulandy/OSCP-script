@@ -6,6 +6,7 @@ from pathlib import Path
 
 ###############################################################################
 # PRIORITY FILES
+# External wordlist ex: https://github.com/danielmiessler/SecLists/blob/198047f1e22251e3b88b98b10e8bd15283e8a1e9/Fuzzing/LFI/LFI-Jhaddix.txt#L4
 ###############################################################################
 
 PRIORITY = [
