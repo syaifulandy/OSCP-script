@@ -676,7 +676,6 @@ generate_exploit_summary() {
               
               major=$(echo "$product_version" | cut -d. -f1)
               minor=$(echo "$product_version" | cut -d. -f2)
-
               if echo "$title" | grep -qiE "$major\\.$minor|$major\\.x|< $major\\."; then
                 echo "$norm_line" >> "$tmp_generic"
               fi
@@ -1086,12 +1085,27 @@ generate_global_summary() {
   print_cmd "find \"$SCAN_DIR\" -name exploits_remote.txt -exec cat {} \\; | sort -u > \"$global_remote\""
   find "$SCAN_DIR" -mindepth 2 -maxdepth 2 -name "exploits_remote.txt" -print0 \
     | xargs -0 cat 2>/dev/null \
+    | grep -vE "^\s*$|^=|SPECIFIC|No obvious" \
+    | grep -E " \| " \
+    | sed 's/&lt;/</g; s/&gt;/>/g; s/&amp;/\&/g' \
     | sort -u > "$global_remote"
+
 
   print_cmd "find \"$SCAN_DIR\" -name exploits_privesc.txt -exec cat {} \\; | sort -u > \"$global_privesc\""
   find "$SCAN_DIR" -mindepth 2 -maxdepth 2 -name "exploits_privesc.txt" -print0 \
     | xargs -0 cat 2>/dev/null \
+    | grep -vE "^\s*$|^=|LOCAL PRIV|No obvious" \
+    | grep -E " \| " \
+    | sed 's/&lt;/</g; s/&gt;/>/g; s/&amp;/\&/g' \
     | sort -u > "$global_privesc"
+
+  # Tambahan untuk remote generic
+  find "$SCAN_DIR" -mindepth 2 -maxdepth 2 -name "exploits_remote_generic.txt" -print0 \
+    | xargs -0 cat 2>/dev/null \
+    | grep -vE "^\s*$|^=|GENERIC|Review|No generic" \
+    | grep -E " \| " \
+    | sed 's/&lt;/</g; s/&gt;/>/g; s/&amp;/\&/g' \
+    | sort -u > "$SCAN_DIR/global_exploits_remote_generic.txt"
 
 
   : > "$global_ports"
