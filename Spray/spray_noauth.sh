@@ -44,6 +44,21 @@ KERBRUTE_STATUS_FILE="$OUTDIR/info_kerbrute_status.txt"
 MERGED_USERS_STATUS_FILE="$OUTDIR/info_merged_ldap_kerbrute_users_status.txt"
 ASREP_AUDIT_STATUS_FILE="$OUTDIR/info_asrep_audit_status.txt"
 
+
+mkdir -p "$OUTDIR"
+: > "$RAW_OUT"
+: > "$KERBRUTE_STATUS_FILE"
+: > "$MERGED_USERS_STATUS_FILE"
+: > "$ASREP_AUDIT_STATUS_FILE"
+
+
+SPIDER_CMDS_FILE="$OUTDIR/spider_download_commands.txt"
+SPIDER_FINDINGS_FILE="$OUTDIR/spider_interesting_files.txt"
+
+: > "$SPIDER_CMDS_FILE"
+: > "$SPIDER_FINDINGS_FILE"
+
+
 if [[ ! -f "$TARGET_FILE" ]]; then
     echo -e "${YELLOW}[!] Error: File '$TARGET_FILE' tidak ditemukan.${NC}"
     echo -e "${BLUE}[i] Usage:${NC}"
@@ -60,11 +75,6 @@ if [[ ! -f "$TARGET_FILE" ]]; then
     exit 1
 fi
 
-mkdir -p "$OUTDIR"
-: > "$RAW_OUT"
-: > "$KERBRUTE_STATUS_FILE"
-: > "$MERGED_USERS_STATUS_FILE"
-: > "$ASREP_AUDIT_STATUS_FILE"
 
 # ====================================================
 # HELPER FUNCTIONS
@@ -107,6 +117,25 @@ normalize_user_only_stream() {
         sed 's/\\.*$//' | \
         awk 'NF'
 }
+
+generate_smbclient_command() {
+
+    local ip="$1"
+    local share="$2"
+    local filepath="$3"
+
+    local filename
+    local dirpath
+
+    filename=$(basename "$filepath")
+    dirpath=$(dirname "$filepath")
+
+    dirpath=$(echo "$dirpath" | sed 's#^/##')
+
+    echo "smbclient //$ip/$share -N -c 'cd \"$dirpath\"; get \"$filename\"'"
+}
+
+
 
 find_kerbrute() {
     if [[ -n "$KERBRUTE_BIN" ]]; then
@@ -339,7 +368,7 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
 
         for attempt in {1..2}; do
 
-            CMD="nxc smb $OUTDIR/active_smb.txt $ARGS --shares --users --rid --no-progress"
+            CMD="nxc smb $OUTDIR/active_smb.txt $ARGS --users --rid --no-progress"
 
             echo -e "${MAGENTA}[CMD][Attempt $attempt] $CMD${NC}"
 
@@ -400,6 +429,60 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
 
 fi
 
+# ---------------- SMB Spider Plus ----------------
+if [[ -s "$OUTDIR/active_smb.txt" ]]; then
+
+    echo -e "${YELLOW}[*] SMB: Spidering readable shares using validated credentials...${NC}"
+
+    while IFS= read -r ip; do
+        [[ -z "$ip" ]] && continue
+
+        # 1. Variabel biasa (Tanpa keyword 'local' karena berada di luar fungsi)
+        auth_args=""
+        auth_name=""
+
+        # 2. Ambil semua baris sukses '[+]' khusus untuk IP yang sedang di-loop saat ini
+        matched_log=$(grep -a "\[+\]" "$RAW_OUT" 2>/dev/null | grep -i "$ip")
+
+        # 3. DYNAMIC FLOW DETECTION VIA FIXED STRING MATCHING
+        # Cek apakah log mengandung '\guest:' secara literal (menggunakan fgrep / grep -F agar bebas dari escape-hell)
+        if echo "$matched_log" | grep -qiF '\guest:'; then
+            auth_args="-u 'guest' -p ''"
+            auth_name="guest"
+            
+        # Cek apakah log mengandung '\:' secara literal (artinya null session sukses)
+        elif echo "$matched_log" | grep -qF '\:'; then
+            auth_args="-u '' -p ''"
+            auth_name="null_session"
+            
+        # Jika tidak terekam status sukses di log awal, gunakan Null Session sebagai best-effort fallback
+        else
+            auth_args="-u '' -p ''"
+            auth_name="fallback_null"
+        fi
+
+        SPIDER_DIR="$OUTDIR/spider_${ip}_${auth_name}"
+        mkdir -p "$SPIDER_DIR"
+
+        SPIDER_CMD="nxc smb $ip $auth_args -M spider_plus -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol OUTPUT_FOLDER=$SPIDER_DIR"
+
+        echo -e "${MAGENTA}[CMD] [Flow-Match: $auth_name] $SPIDER_CMD${NC}"
+
+        # Timeout 150s untuk mitigasi NetBIOSTimeout di infrastructure lab yang lambat
+        timeout 150s nxc smb "$ip" \
+            $auth_args \
+            -M spider_plus \
+            -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol DOWNLOAD_FLAG=False \
+            OUTPUT_FOLDER="$SPIDER_DIR" \
+            2>&1 | tee -a "$RAW_OUT"
+
+        echo -e "${GREEN}[+] Spider enumeration finished for $ip using $auth_name. Output: $SPIDER_DIR${NC}"
+        sleep 1
+
+    done < "$OUTDIR/active_smb.txt"
+fi
+
+
 # ---------------- SMB Vulnerability Scanning ----------------
 
 if [[ -s "$OUTDIR/active_smb.txt" ]]; then
@@ -417,7 +500,7 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
     clean_nxc_file .tmp_vulns
 
     # Parsing hasil temuan jika ada modul yang mendeteksi kerentanan (biasanya ditandai dengan VULNERABLE atau SUCCESS)
-     VULN_LINES=$(grep -ai "VULNERABLE" .tmp_vulns | grep -avi "NOT")
+    VULN_LINES=$(grep -ai "VULNERABLE" .tmp_vulns | grep -avi "NOT")
 
     if [ -n "$VULN_LINES" ]; then
         echo -e "${RED}[!!!] ALERT: Critical SMB Vulnerability Detected! Check details below:${NC}"
@@ -849,7 +932,7 @@ echo -e "${GREEN}[+] PHASE 2.2: MERGE LDAP USERS + RPC USERS + KERBRUTE USERS${N
 echo -e "${PURPLE}====================================================${NC}"
 
 if [[ -s "$DC_INFO" ]]; then
-    while IFS=';' read -r dc_ip domain; do
+    while IFS=';' read -r dc_ip domain fqdn; do
         [[ -z "$dc_ip" || -z "$domain" || "$domain" == "UNKNOWN" ]] && continue
 
         SAFE_DOMAIN=$(safe_name "$domain")
@@ -919,7 +1002,7 @@ if ! command -v impacket-GetNPUsers >/dev/null 2>&1; then
     echo "ASREP_ROAST;GLOBAL;N/A;SKIPPED_NO_IMPACKET;hashes=0;cracked=0" >> "$ASREP_AUDIT_STATUS_FILE"
 else
     if [[ -s "$DC_INFO" ]]; then
-        while IFS=';' read -r dc_ip domain; do
+        while IFS=';' read -r dc_ip domain fqdn; do
             [[ -z "$dc_ip" || -z "$domain" || "$domain" == "UNKNOWN" ]] && continue
 
             SAFE_DOMAIN=$(safe_name "$domain")
