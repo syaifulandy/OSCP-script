@@ -52,13 +52,6 @@ mkdir -p "$OUTDIR"
 : > "$ASREP_AUDIT_STATUS_FILE"
 
 
-SPIDER_CMDS_FILE="$OUTDIR/spider_download_commands.txt"
-SPIDER_FINDINGS_FILE="$OUTDIR/spider_interesting_files.txt"
-
-: > "$SPIDER_CMDS_FILE"
-: > "$SPIDER_FINDINGS_FILE"
-
-
 if [[ ! -f "$TARGET_FILE" ]]; then
     echo -e "${YELLOW}[!] Error: File '$TARGET_FILE' tidak ditemukan.${NC}"
     echo -e "${BLUE}[i] Usage:${NC}"
@@ -472,7 +465,7 @@ if [[ -s "$OUTDIR/active_smb.txt" ]]; then
         timeout 150s nxc smb "$ip" \
             $auth_args \
             -M spider_plus \
-            -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol DOWNLOAD_FLAG=False \
+            -o EXCLUDE_FILTER=c\$,ipc\$,admin\$,netlogon,sysvol \
             OUTPUT_FOLDER="$SPIDER_DIR" \
             2>&1 | tee -a "$RAW_OUT"
 
