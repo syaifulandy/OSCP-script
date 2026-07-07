@@ -551,7 +551,7 @@ if [[ -s "$OUTDIR/active_ftp.txt" ]]; then
         FTP_CMD="nxc ftp $ip -u 'anonymous' -p '' --ls --no-progress"
         echo -e "${MAGENTA}[CMD] $FTP_CMD${NC}"
 
-        nxc ftp "$ip" \
+        timeout 60s nxc ftp "$ip" \
             -u 'anonymous' -p '' \
             --ls \
             --no-progress 2>&1 | tee .tmp_ftp | tee -a "$RAW_OUT"
@@ -590,7 +590,7 @@ if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
         LDAP_CMD_INIT="nxc ldap $ip -u '' -p '' --no-progress"
         echo -e "${MAGENTA}[CMD] $LDAP_CMD_INIT${NC}"
 
-        nxc ldap "$ip" \
+        timeout 60s nxc ldap "$ip" \
             -u '' -p '' \
             --no-progress 2>&1 | tee .tmp_ldap | tee -a "$RAW_OUT"
 
@@ -607,19 +607,19 @@ if [[ -s "$OUTDIR/active_ldap.txt" ]]; then
 
             CMD_USERS="nxc ldap $ip -u '' -p '' --users"
             echo -e "${MAGENTA}[CMD] $CMD_USERS${NC}"
-            nxc ldap "$ip" -u '' -p '' --users > "$LDAP_DUMP_DIR/users.txt" 2>&1
+            timeout 60s nxc ldap "$ip" -u '' -p '' --users > "$LDAP_DUMP_DIR/users.txt" 2>&1
 
             CMD_GROUPS="nxc ldap $ip -u '' -p '' --groups"
             echo -e "${MAGENTA}[CMD] $CMD_GROUPS${NC}"
-            nxc ldap "$ip" -u '' -p '' --groups > "$LDAP_DUMP_DIR/groups.txt" 2>&1
+            timeout 60s nxc ldap "$ip" -u '' -p '' --groups > "$LDAP_DUMP_DIR/groups.txt" 2>&1
 
             CMD_DELEGATION="nxc ldap $ip -u '' -p '' --trusted-for-delegation"
             echo -e "${MAGENTA}[CMD] $CMD_DELEGATION${NC}"
-            nxc ldap "$ip" -u '' -p '' --trusted-for-delegation > "$LDAP_DUMP_DIR/delegation.txt" 2>&1
+            timeout 60s nxc ldap "$ip" -u '' -p '' --trusted-for-delegation > "$LDAP_DUMP_DIR/delegation.txt" 2>&1
 
             CMD_POLICY="nxc ldap $ip -u '' -p '' --pass-pol"
             echo -e "${MAGENTA}[CMD] $CMD_POLICY${NC}"
-            nxc ldap "$ip" -u '' -p '' --pass-pol > "$LDAP_DUMP_DIR/password_policy.txt" 2>&1
+            timeout 60s nxc ldap "$ip" -u '' -p '' --pass-pol > "$LDAP_DUMP_DIR/password_policy.txt" 2>&1
 
             clean_nxc_file "$LDAP_DUMP_DIR/users.txt"
             clean_nxc_file "$LDAP_DUMP_DIR/groups.txt"
@@ -783,7 +783,7 @@ if [[ -s "$OUTDIR/active_nfs.txt" ]]; then
     echo -e "${YELLOW}[*] NFS: Listing exports...${NC}"
     NFS_CMD="nxc nfs $OUTDIR/active_nfs.txt --no-progress"
     echo -e "${MAGENTA}[CMD] $NFS_CMD${NC}"
-    nxc nfs "$OUTDIR/active_nfs.txt" \
+    timeout 60s nxc nfs "$OUTDIR/active_nfs.txt" \
         --no-progress 2>&1 | tee -a "$RAW_OUT"
 fi
 
