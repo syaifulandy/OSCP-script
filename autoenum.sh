@@ -863,6 +863,7 @@ enum_service() {
 
     if grep -qiE "wordpress|wp-content|wp-includes" "$web_dir/index.html"; then
       ok "WordPress detected on $url"
+      echo "$url" >> "$SCAN_DIR/wordpress_targets.txt"
 
       if [ -x "$WPSCAN_SCRIPT" ]; then
         (
@@ -1080,6 +1081,7 @@ generate_global_summary() {
   local global_web="$SCAN_DIR/global_web_targets.txt"
   local global_wp="$SCAN_DIR/global_wordpress.txt"
   local global_nuclei_nonweb="$SCAN_DIR/global_nuclei_nonweb.txt"
+  local global_nuclei_all="$SCAN_DIR/global_nuclei_all.txt"
 
 
   print_cmd "find \"$SCAN_DIR\" -name exploits_remote.txt -exec cat {} \\; | sort -u > \"$global_remote\""
@@ -1140,9 +1142,6 @@ generate_global_summary() {
     | xargs -0 cat 2>/dev/null \
     | sort -u > "$global_nuclei"
 
-  grep -Ei "critical|high" "$global_nuclei" 2>/dev/null | sort -u > "$global_nuclei_high"
-
-
   print_cmd "Aggregating ffuf results..."
 
   echo "target_found,status,size,redirect_to,final_destination_info" > "$global_ffuf"
@@ -1158,12 +1157,26 @@ generate_global_summary() {
     | sort -u > "$global_web"
 
 
-  print_cmd "Detecting WordPress globally..."
+  
+  print_cmd "Collecting WordPress targets..."
 
-  grep -ril "wordpress" "$SCAN_DIR" 2>/dev/null \
-    | grep "index.html" \
-    | sed 's|.*/scans/\([^/]*\)/web_\([0-9]*\).*|\1:\2|' \
-    | sort -u > "$global_wp"
+  if [ -s "$SCAN_DIR/wordpress_targets.txt" ]; then
+      sort -u "$SCAN_DIR/wordpress_targets.txt" > "$global_wp"
+  fi
+
+  if [ -s "$global_wp" ]; then
+
+    print_cmd "nuclei -l $global_wp -tags wordpress -severity critical,high,medium -nh -ni -duc -fr"
+    # Untuk wordpress ada follow redirectnya
+    timeout "$NUCLEI_TIMEOUT" nuclei \
+      -l "$global_wp" \
+      -tags wordpress \
+      -severity critical,high,medium \
+      -nh -ni -duc -fr \
+      -o "$SCAN_DIR/global_nuclei_wordpress.txt"
+
+  fi
+
 
 
   print_cmd "Aggregating non-web nuclei results..."
@@ -1173,12 +1186,25 @@ generate_global_summary() {
     | sort -u > "$global_nuclei_nonweb"
 
 
+  print_cmd "Building global nuclei master report..."
+
+  cat \
+    "$SCAN_DIR/general_nuclei.txt" \
+    "$global_nuclei" \
+    "$global_nuclei_nonweb" \
+    "$SCAN_DIR/global_nuclei_wordpress.txt" \
+    2>/dev/null \
+    | grep -vE '^[[:space:]]*$' \
+    | sort -u \
+    > "$global_nuclei_all"
+
+
+
   ok "Global files:"
   echo "    - $global_remote"
   echo "    - $global_privesc"
   echo "    - $global_ports"
-  echo "    - $global_nuclei"
-  echo "    - $global_nuclei_high"
+  echo "  * - $global_nuclei_all"
   echo "    - $global_ffuf"
   echo "    - $global_web"
   echo "    - $global_wp"
@@ -1284,12 +1310,12 @@ for ip in $(safe_target_list); do
     if [ -s "$IP_DIR/nuclei_targets.txt" ]; then
       info "Running Nuclei..."
       sed 's/^/    - /' "$IP_DIR/nuclei_targets.txt"
-      print_cmd "timeout $NUCLEI_TIMEOUT nuclei -s critical,high,medium -l $IP_DIR/nuclei_targets.txt -o $IP_DIR/nuclei.txt -nh -ni -mhe 25 -duc -pt http -retries 3 2>&1 | tee $IP_DIR/nuclei_live.log"
+      print_cmd "timeout $NUCLEI_TIMEOUT nuclei -s critical,high,medium -l $IP_DIR/nuclei_targets.txt -o $IP_DIR/nuclei.txt -nh -ni -mhe 25 -duc -pt http -etags wordpress -retries 2 2>&1 | tee $IP_DIR/nuclei_live.log"
       timeout "$NUCLEI_TIMEOUT" nuclei \
         -s critical,high,medium \
         -l "$IP_DIR/nuclei_targets.txt" \
         -o "$IP_DIR/nuclei.txt" \
-        -nh -ni -mhe 25 -duc -pt http -retries 3 \
+        -nh -ni -mhe 25 -duc -pt http -etags wordpress -retries 2 \
         2>&1 | tee "$IP_DIR/nuclei_live.log"
     else
       warn "No nuclei targets for $ip"
@@ -1364,13 +1390,13 @@ for ip in $(safe_target_list); do
 
       if [ -s "$IP_DIR/nuclei_targets_new.txt" ]; then
         info "Running Nuclei for NEW ports..."
-        print_cmd "timeout $NUCLEI_TIMEOUT nuclei -s critical,high,medium -l $IP_DIR/nuclei_targets_new.txt -o $IP_DIR/nuclei_new.txt -duc -pt http -nh -ni 2>&1 | tee $IP_DIR/nuclei_new_live.log"
+        print_cmd "timeout $NUCLEI_TIMEOUT nuclei -s critical,high,medium -l $IP_DIR/nuclei_targets_new.txt -o $IP_DIR/nuclei_new.txt -duc -pt http -etags wordpress -nh -ni 2>&1 | tee $IP_DIR/nuclei_new_live.log"
 
         timeout "$NUCLEI_TIMEOUT" nuclei \
           -s critical,high,medium \
           -l "$IP_DIR/nuclei_targets_new.txt" \
           -o "$IP_DIR/nuclei_new.txt" \
-          -duc -pt http  -nh -ni \
+          -duc -pt http -etags wordpress -nh -ni \
           2>&1 | tee "$IP_DIR/nuclei_new_live.log"
       fi
     else
