@@ -16,9 +16,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 OPEN_PORTS_FILE = "global_open_ports.txt"
 FFUF_FILE = "global_ffuf.txt"
 NUCLEI_FILES = [
-    "global_nuclei.txt",
-    "general_nuclei.txt",
-    "global_nuclei_nonweb.txt",
+    "global_nuclei_all.txt"
 ]
 
 OUTPUT_FILE = "Auto Enum Proactive Subdom Telkom.xlsx"
