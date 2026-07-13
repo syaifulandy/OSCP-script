@@ -3,6 +3,7 @@
 
 TARGET="$1"
 MODE="$2"
+CUSTOM_OUTDIR="$3"
 
 if [ -z "$TARGET" ]; then
   echo "Usage: $0 http://target [fast|full]"
@@ -13,10 +14,16 @@ fi
 MODE=${MODE:-full}
 
 # ===== Extract Host =====
+
 HOST=$(echo "$TARGET" | awk -F/ '{print $3}' | sed 's/:/_/g')
 TS=$(date +%F_%H-%M-%S)
 
-OUTDIR="wpscan_${HOST}_$TS"
+if [ -n "$CUSTOM_OUTDIR" ]; then
+  OUTDIR="$CUSTOM_OUTDIR"
+else
+  OUTDIR="wpscan_${HOST}_$TS"
+fi
+
 mkdir -p "$OUTDIR"
 
 
