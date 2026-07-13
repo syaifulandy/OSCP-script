@@ -37,7 +37,7 @@ NC="\e[0m"
 QUICK_HOST_TIMEOUT="5m"
 UDP_HOST_TIMEOUT="3m"
 NUCLEI_TIMEOUT="10m"
-RUSTSCAN_TIMEOUT="5m"
+RUSTSCAN_TIMEOUT="8m"
 NMAP_STATS_EVERY="15s"
 
 FFUF_SCRIPT="/opt/ffuf/ffufscan.sh"
@@ -240,8 +240,8 @@ probe_port_web() {
   # Abaikan port administratif WinRM/WSMan agar hemat waktu
   [[ "$target_port" == "5985" || "$target_port" == "5986" || "$target_port" == "47001" ]] && return
 
-  # Tembak HTTPS dulu (Timeout ketat 3s, connect timeout 2s)
-  local http_code=$(curl -4 -k --max-time 3 --connect-timeout 2 -s -o /dev/null -w "%{http_code}" "https://$target_ip:$target_port")
+  # Tembak HTTPS dulu (Timeout ketat 2s, connect timeout 1s)
+  local http_code=$(curl -4 -k --max-time 2 --connect-timeout 1 -s -o /dev/null -w "%{http_code}" "https://$target_ip:$target_port")
   
   # Jika HTTPS sukses (bukan 000), catat dan exit
   if [[ -n "$http_code" && "$http_code" != "000" ]]; then
@@ -250,7 +250,7 @@ probe_port_web() {
   fi
 
   # Fallback: Tembak HTTP biasa jika HTTPS return 000
-  http_code=$(curl -4 -k --max-time 3 --connect-timeout 2 -s -o /dev/null -w "%{http_code}" "http://$target_ip:$target_port")
+  http_code=$(curl -4 -k --max-time 2 --connect-timeout 1 -s -o /dev/null -w "%{http_code}" "http://$target_ip:$target_port")
   if [[ -n "$http_code" && "$http_code" != "000" ]]; then
     echo "http://$target_ip:$target_port" >> "$out_file"
     return 0
@@ -341,6 +341,7 @@ normalize_product_banner() {
   echo "$1" \
     | sed -E 's/^(syn-ack|udp-response|reset|conn-refused|no-response|echo-reply|arp-response|localhost-response)( ttl [0-9]+)?[[:space:]]*//I' \
     | sed -E 's/\([^)]*\)//g' \
+    | sed 's/[()]//g' \
     | sed -E 's/[[:space:]]+/ /g' \
     | sed -E 's/^[[:space:]]+|[[:space:]]+$//g'
 }
@@ -868,8 +869,10 @@ enum_service() {
       if [ -x "$WPSCAN_SCRIPT" ]; then
         (
           cd "$web_dir" || exit
-          print_cmd "$WPSCAN_SCRIPT \"$url\" fast"
-          "$WPSCAN_SCRIPT" "$url" fast 2>&1 | tee "$web_dir/wpscan.log"
+          print_cmd "$WPSCAN_SCRIPT \"$url\" fast"            
+          "$WPSCAN_SCRIPT" "$url" fast "$web_dir/wpscan" \
+            2>&1 | tee "$web_dir/wpscan.log"
+
         )
       else
         warn "WPScan wrapper not found/executable: $WPSCAN_SCRIPT"
@@ -1017,53 +1020,64 @@ EOF
   fi
 }
 
+
 # =========================
-# RUN RUSTSCAN FULL
+# RUN RUSTSCAN PORT DISCOVERY ONLY
 # =========================
 run_rustscan_full() {
   local ip="$1"
   local ip_dir="$SCAN_DIR/$ip"
 
-  print_cmd "timeout $RUSTSCAN_TIMEOUT rustscan -a \"$ip\" -r 1-65535 --tries 3 --ulimit 5000 -- -Pn -sCV --script-timeout 4m --stats-every $NMAP_STATS_EVERY -oN \"$ip_dir/full.txt\""
-  timeout "$RUSTSCAN_TIMEOUT" rustscan -a "$ip" \
+  rm -f \
+      "$ip_dir/parsed_new.txt" \
+      "$ip_dir/new_ports.txt" \
+      "$ip_dir/new_ports_scv.txt" \
+      "$ip_dir/nuclei_targets_new.txt" \
+      "$ip_dir/nuclei_targets_nonweb_new.txt" \
+      "$ip_dir/nuclei_new.txt" \
+      "$ip_dir/nuclei_nonweb_new.txt"
+
+
+  print_cmd "timeout $RUSTSCAN_TIMEOUT rustscan -a \"$ip\" -r 1-65535 --tries 2 --ulimit 5000 -g"
+
+  timeout "$RUSTSCAN_TIMEOUT" rustscan \
+    -a "$ip" \
     -r 1-65535 \
-    --tries 3 \
+    --tries 2 \
     --ulimit 5000 \
-    -- \
-    -Pn -sCV --script-timeout 4m --stats-every "$NMAP_STATS_EVERY" -oN "$ip_dir/full.txt" \
-    2>&1 | tee "$ip_dir/rustscan_live.log"
+    -g \
+    > "$ip_dir/rustscan_ports.txt" \
+    2> "$ip_dir/rustscan_live.log"
+}
+# =========================
+# BUILD NEW PORTS FROM RUSTSCAN
+# =========================
+build_new_ports_from_rustscan() {
+  local ip_dir="$1"
+
+  : > "$ip_dir/new_ports.txt"
+
+  [ ! -s "$ip_dir/rustscan_ports.txt" ] && return
+  [ ! -s "$ip_dir/parsed_quick.txt" ] && return
+
+  awk -F';' '{print $1}' "$ip_dir/parsed_quick.txt" \
+    | sort -n -u \
+    > "$ip_dir/quick_ports.txt"
+
+  grep -oP '\[[0-9, ]+\]' "$ip_dir/rustscan_ports.txt" \
+    | tr -d '[]' \
+    | tr ',' '\n' \
+    | sed 's/ //g' \
+    | awk '/^[0-9]+$/' \
+    | sort -n -u \
+    > "$ip_dir/rust_ports.txt"
+
+  comm -13 \
+    "$ip_dir/quick_ports.txt" \
+    "$ip_dir/rust_ports.txt" \
+    > "$ip_dir/new_ports.txt"
 }
 
-# =========================
-# BUILD NEW PORTS ONLY
-# Compare by port only.
-# =========================
-build_new_ports_only() {
-  local quick_file="$1"
-  local full_file="$2"
-  local new_file="$3"
-
-  : > "$new_file"
-
-  if [ ! -s "$full_file" ]; then
-    return
-  fi
-
-  if [ ! -s "$quick_file" ]; then
-    cp "$full_file" "$new_file"
-    return
-  fi
-
-  awk -F';' '
-    NR==FNR {
-      old_ports[$1]=1
-      next
-    }
-    !($1 in old_ports) {
-      print
-    }
-  ' "$quick_file" "$full_file" > "$new_file"
-}
 
 # =========================
 # GLOBAL SUMMARY
@@ -1118,7 +1132,7 @@ generate_global_summary() {
     local pu="$SCAN_DIR/$ip/parsed_udp.txt"
 
     # ✅ TCP: merge quick + full
-    for f in "$pq" "$pf"; do
+    for f in "$pf"; do
       if [ -s "$f" ]; then
         awk -F';' -v ip="$ip" '{print ip ";tcp;" $0}' "$f" >> "$global_ports"
       fi
@@ -1249,10 +1263,10 @@ for ip in $(safe_target_list); do
   fi
 
   info "Nmap UDP Fast Scan running in background..."
-  print_cmd "$SUDO_BIN nmap -sU -sV --top-ports 20 --max-retries 1 --host-timeout $UDP_HOST_TIMEOUT --stats-every $NMAP_STATS_EVERY -Pn \"$ip\" -oN \"$IP_DIR/udp_fast.txt\""
+  print_cmd "$SUDO_BIN nmap -sU --top-ports 20 --max-retries 1 --host-timeout $UDP_HOST_TIMEOUT --stats-every $NMAP_STATS_EVERY -Pn \"$ip\" -oN \"$IP_DIR/udp_fast.txt\""
 
   (
-    $SUDO_BIN timeout $QUICK_HOST_TIMEOUT nmap -n -sU -sV \
+    $SUDO_BIN timeout $QUICK_HOST_TIMEOUT nmap -n -sU \
       --top-ports 20 \
       --max-retries 1 \
       --host-timeout "$UDP_HOST_TIMEOUT" \
@@ -1341,25 +1355,55 @@ for ip in $(safe_target_list); do
 
     run_rustscan_full "$ip"
 
-    parse_nmap_open "$IP_DIR/full.txt" > "$IP_DIR/parsed_full.txt"
-
-    if [ -s "$IP_DIR/parsed_full.txt" ]; then
-      ok "Parsed full open ports:"
-      column -t -s';' "$IP_DIR/parsed_full.txt" 2>/dev/null || cat "$IP_DIR/parsed_full.txt"
-    else
-      warn "No open ports for $ip"
+    if [ ! -s "$IP_DIR/rustscan_ports.txt" ]; then
+        warn "RustScan failed or no output for $ip" 
     fi
 
-    build_new_ports_only \
-      "$IP_DIR/parsed_quick.txt" \
-      "$IP_DIR/parsed_full.txt" \
-      "$IP_DIR/parsed_new.txt"
+    build_new_ports_from_rustscan "$IP_DIR"
+
+    if [ -s "$IP_DIR/new_ports.txt" ]; then
+
+      NEW_PORTS=$(paste -sd, "$IP_DIR/new_ports.txt")
+
+      info "New ports discovered by RustScan:"
+      cat "$IP_DIR/new_ports.txt"
+
+      print_cmd "nmap -n -Pn -sCV -p $NEW_PORTS --script-timeout 4m --stats-every $NMAP_STATS_EVERY \"$ip\" -oN \"$IP_DIR/new_ports_scv.txt\""
+
+      timeout "$QUICK_HOST_TIMEOUT" nmap \
+        -n \
+        -Pn \
+        -sCV \
+        -p "$NEW_PORTS" \
+        --script-timeout 4m \
+        --stats-every "$NMAP_STATS_EVERY" \
+        "$ip" \
+        -oN "$IP_DIR/new_ports_scv.txt" \
+        2>&1 | tee "$IP_DIR/new_ports_scv_live.log"
+
+      parse_nmap_open "$IP_DIR/new_ports_scv.txt" > "$IP_DIR/parsed_new.txt"
+
+      cat \
+        "$IP_DIR/parsed_quick.txt" \
+        "$IP_DIR/parsed_new.txt" \
+        | sort -u \
+        > "$IP_DIR/parsed_full.txt"
+
+      generate_exploit_summary "$IP_DIR" "$IP_DIR/parsed_full.txt"
+
+    else
+
+      info "No new RustScan ports found."
+
+      sort -u "$IP_DIR/parsed_quick.txt" \
+      > "$IP_DIR/parsed_full.txt"
+
+
+    fi
 
     if [[ -s "$IP_DIR/parsed_new.txt" ]]; then
       echo -e "${RED}[!] New ports:${NC}"
       column -t -s';' "$IP_DIR/parsed_new.txt" 2>/dev/null || cat "$IP_DIR/parsed_new.txt"
-
-      generate_exploit_summary "$IP_DIR" "$IP_DIR/parsed_full.txt"
 
       while IFS=';' read -r port service product; do
         enum_service "$ip" "$port" "$service" "$product"
@@ -1479,7 +1523,7 @@ else
     err "python3 not found. Cannot execute autoenum script."
     warn "Skipping Excel report generation."
   else
-    info "Preparing Autoenum script..."
+    info "Preparing Autoenum Generate Summary Excel Python script..."
 
     print_cmd "cp \"$AUTOENUM_SCRIPT\" \"$LOCAL_SCRIPT\""
     cp "$AUTOENUM_SCRIPT" "$LOCAL_SCRIPT"
@@ -1487,7 +1531,7 @@ else
     if [ ! -f "$LOCAL_SCRIPT" ]; then
       err "Failed to copy autoenum script."
     else
-      info "Running Autoenum Python script..."
+      info "Running Autoenum Generate Summary Excel Python script..."
 
       (
         cd "$SCAN_DIR" || exit
