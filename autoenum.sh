@@ -1061,7 +1061,7 @@ build_new_ports_from_rustscan() {
   [ ! -s "$ip_dir/parsed_quick.txt" ] && return
 
   awk -F';' '{print $1}' "$ip_dir/parsed_quick.txt" \
-    | sort -n -u \
+    | sort -u \
     > "$ip_dir/quick_ports.txt"
 
   grep -oP '\[[0-9, ]+\]' "$ip_dir/rustscan_ports.txt" \
@@ -1069,10 +1069,10 @@ build_new_ports_from_rustscan() {
     | tr ',' '\n' \
     | sed 's/ //g' \
     | awk '/^[0-9]+$/' \
-    | sort -n -u \
+    | sort -u \
     > "$ip_dir/rust_ports.txt"
 
-  comm -13 \
+  comm -23 \
     "$ip_dir/quick_ports.txt" \
     "$ip_dir/rust_ports.txt" \
     > "$ip_dir/new_ports.txt"
