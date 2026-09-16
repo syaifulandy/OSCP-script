@@ -1044,8 +1044,8 @@ build_new_ports_from_rustscan() {
     > "$ip_dir/rust_ports.txt"
 
   comm -23 \
-    "$ip_dir/quick_ports.txt" \
     "$ip_dir/rust_ports.txt" \
+    "$ip_dir/quick_ports.txt" \
     > "$ip_dir/new_ports.txt"
 }
 
