@@ -1071,10 +1071,10 @@ build_new_ports_from_rustscan() {
     | awk '/^[0-9]+$/' \
     | sort -u \
     > "$ip_dir/rust_ports.txt"
-
+    
   comm -23 \
-    "$ip_dir/quick_ports.txt" \
     "$ip_dir/rust_ports.txt" \
+    "$ip_dir/quick_ports.txt" \
     > "$ip_dir/new_ports.txt"
 }
 
