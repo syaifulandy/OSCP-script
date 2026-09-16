@@ -1266,7 +1266,8 @@ for ip in $(safe_target_list); do
       while IFS=';' read -r port service product; do
         enum_service "$ip" "$port" "$service" "$product"
       done < "$IP_DIR/parsed_new.txt"
-
+    fi
+  ) &
   while [ "$(jobs -rp | wc -l)" -ge 3 ]; do
     sleep 1
   done
