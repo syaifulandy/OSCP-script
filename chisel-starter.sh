@@ -1,13 +1,31 @@
 #!/bin/bash
 
 # =========================
-# DEFAULT CONFIGURATION
+# DYNAMIC CONFIGURATION
 # =========================
-CHISEL_DIR="/opt/postexploitation/chisel"
+# Otomatis mendeteksi direktori lokasi script ini disimpan
+CHISEL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="9001"
 WEBPORT="8000"
 FORWARD_SPEC=""
 MODE="direct"
+
+# Variable untuk menyimpan Process ID (PID) dari Webserver Python
+PYTHON_PID=""
+
+# =========================
+# CLEANUP FUNCTION (TRAP)
+# =========================
+cleanup() {
+    if [ -n "$PYTHON_PID" ] && kill -0 "$PYTHON_PID" 2>/dev/null; then
+        echo ""
+        echo "[+] Stopping Python Web Server (PID: $PYTHON_PID)..."
+        kill "$PYTHON_PID" 2>/dev/null
+    fi
+}
+
+# Pasang trap agar fungsi cleanup dipanggil saat script exit atau di-interrupt (Ctrl+C)
+trap cleanup EXIT INT TERM
 
 # =========================
 # HELPER / USAGE FUNCTION
@@ -26,7 +44,7 @@ OPTIONS:
                           Contoh singkat: "8000" (otomatis R:8000:127.0.0.1:8000)
                           Contoh custom  : "R:8080:10.10.10.5:80"
   -s, --socks             Gunakan mode SOCKS5 Proxy (Butuh Proxychains / Browser SOCKS)
-  -d, --dir PATH          Direktori tempat binary chisel disimpan (Default: /opt/postexploitation/chisel)
+  -d, --dir PATH          Direktori tempat binary chisel disimpan (Default: folder script ini)
   -h, --help              Tampilkan pesan bantuan ini
 
 PERBEDAAN MODE & PROXYCHAINS:
@@ -46,9 +64,6 @@ EXAMPLES:
 
   2. Mode SOCKS5 Proxy (Pivoting - Menggunakan Proxychains):
      ./$(basename "$0") -s
-
-  3. Custom Forward Port & Chisel Server Port:
-     ./$(basename "$0") -p 4444 -f 8080
 
 EOF
     exit 0
@@ -106,7 +121,7 @@ echo "[+] Web Server  : $WEBPORT"
 # Format string parameter untuk client
 if [ "$MODE" == "socks" ]; then
     CLIENT_PARAM="R:socks"
-    echo "[+] Mode        : SOCKS5 Proxy (MEMBUTEHKAN Proxychains)"
+    echo "[+] Mode        : SOCKS5 Proxy (MEMBUTUHKAN Proxychains)"
 else
     if [ -z "$FORWARD_SPEC" ]; then
         echo "[!] Peringatan: Tidak ada -f (forward) atau -s (socks) yang ditentukan."
@@ -128,11 +143,12 @@ fi
 echo ""
 echo "[+] Starting HTTP Server di port :$WEBPORT dari direktori $CHISEL_DIR..."
 
-# Matikan proses python lama jika port 8000 masih menggantung
+# Matikan proses python lama jika port WEBPORT masih menggantung
 fuser -k ${WEBPORT}/tcp >/dev/null 2>&1
 
-# Jalankan Python server dengan argumen --directory agar langsung menyajikan isi folder /opt/postexploitation/chisel
+# Jalankan Python server di background & simpan PID-nya
 python3 -m http.server "$WEBPORT" --directory "$CHISEL_DIR" >/dev/null 2>&1 &
+PYTHON_PID=$!
 
 # =========================
 # PRINT TARGET COMMANDS
@@ -167,7 +183,7 @@ if [ "$MODE" == "socks" ]; then
     echo " 1. Web Testing (CURL):"
     echo "    proxychains curl -i http://127.0.0.1:8000"
     echo ""
-    echo " 2. Port Scanning / Service Enumeration (Nmap TCP Connect Scan) (gak bisa SYN scans, full sweeps through a tunnel are painfully slow):"
+    echo " 2. Port Scanning / Service Enumeration (Nmap TCP Connect Scan, Tidak bisa SYN Scan, sweep scan sangat lambat!) :"
     echo "    proxychains nmap -sT -Pn -p 80,443,8000,8080 127.0.0.1"
     echo ""
     echo " 3. Web Browser Access:"
@@ -189,8 +205,11 @@ fi
 echo "========================================================="
 
 echo ""
-read -p "[*] Tekan ENTER untuk menjalankan Chisel Server..."
+read -p "[*] Tekan ENTER untuk mematikan Web Server dan menjalankan Chisel Server..."
 echo ""
+
+# Mematikan Web Server setelah pengguna menekan ENTER
+cleanup
 
 # =========================
 # START CHISEL SERVER
