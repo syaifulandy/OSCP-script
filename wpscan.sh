@@ -381,7 +381,7 @@ run_wpscan() {
 }
 
 if [[ "$MODE" == "fast" ]]; then
-  info "Running FAST scan: plugins and users 1-5."
+  info "Running FAST scan: plugins and users"
 
   # Increase timeout if the target is slow.
   run_wpscan 15m \
