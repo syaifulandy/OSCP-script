@@ -610,12 +610,6 @@ else
   # INTERESTING FINDINGS
   (
     .interesting_findings[]?
-    | select(
-        .type == "xmlrpc" or
-        .type == "debug_log" or
-        .type == "readme" or
-        .type == "wp_cron"
-      )
     | [
         $target,
         "finding",
@@ -642,10 +636,21 @@ else
               )
             )
           | join(" ; ")
+        ),
+        (
+          .
+          | del(
+              .type,
+              .to_s,
+              .url,
+              .references
+            )
+          | tostring
         )
       ]
     | @csv
   )
+  
 
   ' "$JSON_OUT" >> "$REPORT_CSV"; then
     error "Failed to generate findings CSV."
